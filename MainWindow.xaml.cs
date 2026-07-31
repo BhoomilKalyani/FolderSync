@@ -24,14 +24,7 @@ public partial class MainWindow : Window
     private const string DeveloperName = "Bhoomil Kalyani";
     private const string DeveloperEmail = "bhoomil.kalyani999@gmail.com";
 
-    private sealed record ModeOption(string Label, bool? Value);
-
-    private static readonly ModeOption[] ModeOptions =
-    {
-        new("(default)", null),
-        new("Mirror", true),
-        new("Additive", false),
-    };
+    // The Mode picker's choices live in MainWindow.xaml as the "ModeOptionList" resource.
 
     private readonly (string task, string label)[] _scheduleTasks =
     {
@@ -46,7 +39,7 @@ public partial class MainWindow : Window
 
         _config = SyncConfig.Load();
         _targets = new ObservableCollection<SyncTarget>(_config.Targets);
-        _targets.CollectionChanged += (_, _) => { SyncTargetsToConfig(); SaveConfig(); };
+        _targets.CollectionChanged += (_, _) => { SyncTargetsToConfig(); SaveConfig(); UpdateRecycleNote(); };
 
         Icon = AppResources.WindowIcon;
         SourceInitialized += (_, _) => ThemeManager.ApplyWindowChrome(this);
@@ -56,7 +49,6 @@ public partial class MainWindow : Window
         CopyrightText.Text = $"Copyright © {DateTime.Now.Year} {DeveloperName}. All rights reserved.";
         AboutPaths.Text = $"Settings:  {SyncConfig.ConfigPath}\nLogs:      {SyncConfig.LogDir}\nProgram:   {ScheduleManager.ExePath}";
 
-        ModeColumn.ItemsSource = ModeOptions;
         DestGrid.ItemsSource = _targets;
         LoadConfigIntoUi();
         BuildScheduleRows();
@@ -82,7 +74,6 @@ public partial class MainWindow : Window
     private void LoadConfigIntoUi()
     {
         SourceBox.Text = _config.Source;
-        MirrorCheck.IsChecked = _config.Mirror;
         SkipFilesBox.Text = string.Join("; ", _config.ExcludeFiles);
         SkipFoldersBox.Text = string.Join("; ", _config.ExcludeFolders);
         UpdateRecycleNote();
@@ -102,12 +93,15 @@ public partial class MainWindow : Window
                         + "On a laptop that sleeps rather than shutting down, this is the trigger that keeps things current.";
     }
 
-    private void UpdateRecycleNote() =>
-        RecycleNote.Text = MirrorCheck.IsChecked == true
-            ? _config.RecycleDeletedFiles
-                ? $"Deleted files are kept for {_config.RecycleRetentionDays} days in “{_config.RecycleFolderName}” — see Recycled files."
-                : "Deletions are permanent (recycle is turned off in config.json)."
-            : "Additive: files are only added or updated, never deleted.";
+    private void UpdateRecycleNote()
+    {
+        bool anyMirror = _targets.Any(t => t.Enabled && t.MirrorEffective(_config.Mirror));
+        RecycleNote.Text = !anyMirror
+            ? "No destination mirrors right now, so nothing will be deleted."
+            : _config.RecycleDeletedFiles
+                ? $"For mirrored destinations, deleted files are kept for {_config.RecycleRetentionDays} days in “{_config.RecycleFolderName}” — see Recycled files."
+                : "For mirrored destinations, deletions are permanent (recycle is turned off in config.json).";
+    }
 
     private void SyncTargetsToConfig()
     {
@@ -120,7 +114,6 @@ public partial class MainWindow : Window
         if (!_loaded) return;
 
         _config.Source = SourceBox.Text.Trim();
-        _config.Mirror = MirrorCheck.IsChecked == true;
         _config.ExcludeFiles = SplitList(SkipFilesBox.Text);
         _config.ExcludeFolders = SplitList(SkipFoldersBox.Text);
         SyncTargetsToConfig();
@@ -136,10 +129,14 @@ public partial class MainWindow : Window
     private void SourceBox_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
     private void Skip_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
 
-    private void MirrorCheck_Click(object sender, RoutedEventArgs e)
+    /// <summary>A destination's Mirror tick changed — persist it and refresh the wording.</summary>
+    private void ModeCheck_Click(object sender, RoutedEventArgs e)
     {
+        if (!_loaded) return;
         SaveConfig();
         UpdateRecycleNote();
+        // The read-only Mode column reads from ModeText, so ask the row to re-read it.
+        DestGrid.Items.Refresh();
     }
 
     private void DestGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e) =>
@@ -195,7 +192,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        _targets.Add(new SyncTarget { Name = new DirectoryInfo(picked).Name, Destination = picked, Enabled = true });
+        // Additive by default: a brand-new destination can never lose files until you opt into Mirror.
+        _targets.Add(new SyncTarget
+        {
+            Name = new DirectoryInfo(picked).Name,
+            Destination = picked,
+            Enabled = true,
+            Mirror = false,
+        });
     }
 
     private void RemoveDestination_Click(object sender, RoutedEventArgs e)

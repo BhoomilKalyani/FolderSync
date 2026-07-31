@@ -85,10 +85,10 @@ public class SyncConfigTests
     }
 
     [Theory]
-    [InlineData(null, "(default)")]
     [InlineData(true, "Mirror")]
     [InlineData(false, "Additive")]
-    public void ModeText_describes_the_override(bool? mirror, string expected)
+    [InlineData(null, "(not set)")]   // only until SyncConfig.Load fills it in
+    public void ModeText_describes_the_mode(bool? mirror, string expected)
     {
         Assert.Equal(expected, new SyncTarget { Mirror = mirror }.ModeText);
     }

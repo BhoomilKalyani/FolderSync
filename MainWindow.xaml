@@ -1,6 +1,7 @@
-<Window x:Class="FolderSync.MainWindow"
+﻿<Window x:Class="FolderSync.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:local="clr-namespace:FolderSync"
         Title="Folder Sync" Height="720" Width="1040"
         MinHeight="560" MinWidth="880"
         WindowStartupLocation="CenterScreen"
@@ -69,9 +70,9 @@
                                 <TextBox x:Name="SourceBox" Grid.Column="0" LostFocus="SourceBox_LostFocus"/>
                                 <Button Grid.Column="1" Content="Browse…" Margin="8,0,0,0" Click="BrowseSource_Click"/>
                             </Grid>
-                            <CheckBox x:Name="MirrorCheck" Margin="0,14,0,0" Click="MirrorCheck_Click"
-                                      Content="Mirror — make destinations an exact copy (deletions are copied across)"/>
-                            <TextBlock x:Name="RecycleNote" Style="{StaticResource Subtle}" Margin="27,6,0,0"/>
+                            <TextBlock Style="{StaticResource Subtle}" Margin="0,12,0,0"
+                                       Text="Each destination below chooses its own mode — Mirror for an exact copy, or Additive to only ever add and update."/>
+                            <TextBlock x:Name="RecycleNote" Style="{StaticResource Subtle}" Margin="0,6,0,0"/>
                         </StackPanel>
                     </Border>
 
@@ -79,20 +80,34 @@
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock Text="Destinations" Style="{StaticResource CardTitle}"/>
+                            <!-- Virtualisation off: only a handful of destinations, and recycled
+                                 row containers are what let cell editors write stale values back. -->
                             <DataGrid x:Name="DestGrid" MinHeight="120" MaxHeight="220"
                                       CanUserAddRows="False" CanUserDeleteRows="False"
+                                      EnableRowVirtualization="False" EnableColumnVirtualization="False"
                                       CellEditEnding="DestGrid_CellEditEnding">
                                 <DataGrid.Columns>
                                     <!-- Fixed columns first, star column last: that way the Mode
                                          picker stays visible even if the grid has to scroll. -->
                                     <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled}" Width="42"/>
                                     <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="150"/>
-                                    <DataGridComboBoxColumn x:Name="ModeColumn" Header="Mode" Width="110"
-                                                            SelectedValueBinding="{Binding Mirror}"
-                                                            SelectedValuePath="Value"
-                                                            DisplayMemberPath="Label"
-                                                            ElementStyle="{StaticResource ThemedComboBox}"
-                                                            EditingElementStyle="{StaticResource ThemedComboBox}"/>
+                                    <!-- A checkbox, not a combo box, on purpose: a cell ComboBox
+                                         bound two-way resets to its first item whenever WPF
+                                         re-realises the row, writing that value back and silently
+                                         changing the saved mode. A checkbox has no item list, so
+                                         the value can only change when you click it. -->
+                                    <DataGridTemplateColumn Header="Mirror" Width="66" SortMemberPath="Mirror">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox HorizontalAlignment="Center"
+                                                          IsThreeState="False"
+                                                          IsChecked="{Binding Mirror, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                          Click="ModeCheck_Click"
+                                                          ToolTip="Ticked = Mirror (exact copy, deletions carry over). Unticked = Additive (only adds and updates)."/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
+                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText}" Width="80" IsReadOnly="True"/>
                                     <DataGridTextColumn Header="Folder" Binding="{Binding Destination}" Width="*" MinWidth="180"/>
                                 </DataGrid.Columns>
                             </DataGrid>
@@ -102,7 +117,7 @@
                                 <Button Content="Open config file" Style="{StaticResource LinkButton}" Click="OpenConfig_Click"/>
                             </StackPanel>
                             <TextBlock Style="{StaticResource Subtle}" Margin="0,10,0,0"
-                                       Text="Mode: “(default)” follows the Mirror setting above. Choose Additive for a destination that should never lose files."/>
+                                       Text="Mirror keeps a destination identical to the source, so files you delete are deleted there too (recoverable from Recycled files). Additive never deletes — a good choice for a backup drive."/>
                         </StackPanel>
                     </Border>
 
@@ -358,7 +373,7 @@
                                 <TextBlock Grid.Row="2" Grid.Column="0" Text="Source" Style="{StaticResource Subtle}"/>
                                 <Button Grid.Row="2" Grid.Column="1" Style="{StaticResource LinkButton}"
                                         HorizontalAlignment="Left" Padding="0" Margin="0"
-                                        Content="github.com/Bhoomil1991/FolderSync" Click="OpenProject_Click"/>
+                                        Content="github.com/BhoomilKalyani/FolderSync" Click="OpenProject_Click"/>
                             </Grid>
 
                             <Separator/>

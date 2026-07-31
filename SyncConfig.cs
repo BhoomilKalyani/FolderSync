@@ -13,18 +13,21 @@ public sealed class SyncTarget
     public bool Enabled { get; set; } = true;
 
     /// <summary>
-    /// Overrides the global mode for this destination: true = mirror, false = additive,
-    /// null = follow <see cref="SyncConfig.Mirror"/>. Lets you mirror to a cloud folder while
-    /// a backup drive keeps everything (never deletes).
+    /// How this destination is synced: true = mirror (an exact copy, so deletions carry over),
+    /// false = additive (only ever adds and updates). Each destination decides for itself, so you
+    /// can mirror to a cloud folder while a backup drive keeps everything.
+    ///
+    /// Nullable only for backwards compatibility: configs written before per-destination modes
+    /// existed have no value here, and <see cref="SyncConfig.Load"/> fills it in on load.
     /// </summary>
     public bool? Mirror { get; set; }
 
-    /// <summary>The mode actually used, resolving the override against the global setting.</summary>
-    public bool MirrorEffective(bool globalMirror) => Mirror ?? globalMirror;
+    /// <summary>The mode actually used; falls back to <paramref name="fallback"/> if unset.</summary>
+    public bool MirrorEffective(bool fallback) => Mirror ?? fallback;
 
-    /// <summary>How the mode shows in the UI: "Mirror", "Additive", or "(default)".</summary>
+    /// <summary>How the mode reads in the UI.</summary>
     [JsonIgnore]
-    public string ModeText => Mirror is null ? "(default)" : Mirror.Value ? "Mirror" : "Additive";
+    public string ModeText => Mirror is null ? "(not set)" : Mirror.Value ? "Mirror" : "Additive";
 }
 
 /// <summary>When a scheduled sync should send a notification email.</summary>
@@ -91,7 +94,11 @@ public sealed class SyncConfig
     public string Source { get; set; } = "";
     public List<SyncTarget> Targets { get; set; } = new();
 
-    /// <summary>Mirror = destination becomes an exact copy (deletes extras). False = additive only.</summary>
+    /// <summary>
+    /// Legacy setting from before each destination chose its own mode. It is now only used to fill
+    /// in destinations saved by an older version (see <see cref="Load"/>), and as the fallback if a
+    /// destination somehow has no mode. New destinations default to additive, which cannot delete.
+    /// </summary>
     public bool Mirror { get; set; } = true;
 
     public EmailSettings Email { get; set; } = new();
@@ -123,7 +130,10 @@ public sealed class SyncConfig
     public bool IncludePrereleaseUpdates { get; set; }
 
     [JsonIgnore]
-    public const string DefaultUpdateRepo = "Bhoomil1991/FolderSync";
+    public const string DefaultUpdateRepo = "BhoomilKalyani/FolderSync";
+
+    /// <summary>Repository name used before the account was renamed; migrated away from on load.</summary>
+    private const string LegacyUpdateRepo = "Bhoomil1991/FolderSync";
 
     /// <summary>File name patterns to skip, e.g. "~$*", "Thumbs.db" (robocopy /XF).</summary>
     public List<string> ExcludeFiles { get; set; } = new() { "~$*", "Thumbs.db", "desktop.ini", ".DS_Store" };
@@ -215,9 +225,14 @@ public sealed class SyncConfig
                     // own config and make an empty source impossible to save.)
                     cfg.Email ??= new EmailSettings();
                     cfg.Targets ??= new List<SyncTarget>();
+                    // Destinations saved before per-destination modes existed inherit the old
+                    // global setting, so an existing mirror setup keeps mirroring.
+                    foreach (var t in cfg.Targets) t.Mirror ??= cfg.Mirror;
                     cfg.ExcludeFiles ??= new List<string>();
                     cfg.ExcludeFolders ??= new List<string>();
-                    if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)) cfg.UpdateRepo = DefaultUpdateRepo;
+                    if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)
+                        || cfg.UpdateRepo.Equals(LegacyUpdateRepo, StringComparison.OrdinalIgnoreCase))
+                        cfg.UpdateRepo = DefaultUpdateRepo;
                     if (string.IsNullOrWhiteSpace(cfg.RecycleFolderName)) cfg.RecycleFolderName = "_FolderSyncTrash";
                     return cfg;
                 }

@@ -1,4 +1,4 @@
-; Inno Setup script for Folder Sync
+﻿; Inno Setup script for Folder Sync
 ; Built by build-installer.ps1, which publishes the app and passes AppVersion in.
 ;
 ; Design notes:
@@ -18,7 +18,7 @@
 #define AppName "Folder Sync"
 #define AppExe "FolderSync.exe"
 #define AppPublisher "Bhoomil Kalyani"
-#define AppUrl "https://github.com/Bhoomil1991/FolderSync"
+#define AppUrl "https://github.com/BhoomilKalyani/FolderSync"
 
 [Setup]
 ; A fixed AppId is what makes an install an *upgrade* rather than a second copy - never change it.

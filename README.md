@@ -1,4 +1,4 @@
-# Folder Sync
+﻿# Folder Sync
 
 A small Windows app that mirrors one folder into **several destinations at once** — for example
 your Documents folder into your **Google Drive**, **iCloud Drive** and an external backup drive,
@@ -9,7 +9,7 @@ Drive for Desktop each keep a normal **local folder** on your PC that their own 
 cloud. Folder Sync just copies between those local folders, and each cloud client uploads from
 there. That makes it fast and reliable, and it keeps working even if a provider changes its API.
 
-Built with .NET 8 / WinForms, using Windows' own **robocopy** for the file transfer and
+Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer and
 **Task Scheduler** for automation.
 
 ---
@@ -19,8 +19,8 @@ Built with .NET 8 / WinForms, using Windows' own **robocopy** for the file trans
 | | |
 |---|---|
 | **Many destinations** | Sync one source to as many folders as you like; enable/disable each one individually. |
-| **Mirror or additive** | Mirror makes destinations exact copies; additive only ever adds and updates. |
-| **Deletion safety net** | In mirror mode, files that would be deleted are moved to a dated recycle folder instead (kept 30 days). |
+| **Per-destination mode** | Each destination is Mirror (an exact copy) or Additive (only adds and updates) — mirror to the cloud while a backup drive keeps everything. |
+| **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. |
 | **Preview (dry run)** | See exactly what *would* be copied or deleted before committing to it. |
 | **Scheduling** | Daily, monthly, and **at sign-in / every screen unlock** — no admin rights needed. |
 | **Email notifications** | Optional summary email after each scheduled sync, with the log attached. |
@@ -34,7 +34,7 @@ Built with .NET 8 / WinForms, using Windows' own **robocopy** for the file trans
 ## Install
 
 1. Download **`FolderSyncSetup-<version>.exe`** from the
-   [**Releases**](https://github.com/Bhoomil1991/FolderSync/releases) page.
+   [**Releases**](https://github.com/BhoomilKalyani/FolderSync/releases) page.
 2. Run it. On first launch, set your **Source** folder and add your **destinations**.
 
 **Requirements:** Windows 10 or 11 (64-bit). Nothing else — the .NET runtime is bundled.
@@ -80,18 +80,31 @@ Everything you edit saves immediately — there is no Save button.
 
 ## Sync modes
 
-**Mirror** (default) makes each destination an exact copy of the source, which means **deletions
-propagate**. To keep that safe, anything a mirror is about to delete is first **moved aside**:
+Every destination picks its own mode in the **Mode** column, so one source can feed a mirrored
+cloud folder and an add-only archive at the same time.
+
+| Mode | Behaviour |
+|---|---|
+| **Additive** (default for a new destination) | Only copies new and changed files. Never deletes anything. |
+| **Mirror** | Keeps the destination identical to the source, so files you delete are removed there too. |
+
+New destinations start as **Additive** deliberately: nothing can be lost until you opt in to
+mirroring.
+
+### Recycled files
+
+Because mirroring propagates deletions, anything a mirror is about to delete is **moved aside**
+first rather than deleted:
 
 ```
 <destination>\_FolderSyncTrash\<yyyyMMdd-HHmmss>\<original relative path>
 ```
 
-That folder is never mirrored (otherwise it would be purged itself) and batches older than
+The **Recycled files** page lists these batches, shows what is inside, and restores files back into
+the source folder — the next sync then copies them out to every destination again. That folder is
+never mirrored (otherwise it would be purged itself) and batches older than
 `RecycleRetentionDays` (default **30**) are removed automatically. Set
 `"RecycleDeletedFiles": false` to make deletions permanent instead.
-
-**Additive** never deletes anything — it only copies new and changed files.
 
 ---
 
@@ -181,8 +194,8 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 | Key | Default | Meaning |
 |---|---|---|
 | `Source` | `""` | Folder to copy from. |
-| `Targets` | `[]` | Destinations: `Name`, `Destination`, `Enabled`. |
-| `Mirror` | `true` | `true` = exact copy (deletes); `false` = additive. |
+| `Targets` | `[]` | Destinations: `Name`, `Destination`, `Enabled`, `Mirror` (`true` = mirror, `false` = additive). |
+| `Mirror` | `true` | Legacy global mode. Only used to fill in destinations saved before per-destination modes existed. |
 | `RecycleDeletedFiles` | `true` | Move would-be-deleted files aside instead of deleting. |
 | `RecycleRetentionDays` | `30` | How long to keep recycled batches. |
 | `RecycleFolderName` | `_FolderSyncTrash` | Recycle folder name inside each destination. |
@@ -190,7 +203,7 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 | `ExcludeFolders` | `[]` | Folders to skip (robocopy `/XD`). |
 | `MinMinutesBetweenAutoSyncs` | `15` | Throttle for logon/unlock runs. |
 | `CheckForUpdates` | `true` | Check GitHub for new releases at startup. |
-| `UpdateRepo` | `Bhoomil1991/FolderSync` | `owner/repo` that publishes releases. |
+| `UpdateRepo` | `BhoomilKalyani/FolderSync` | `owner/repo` that publishes releases. |
 | `Email` | disabled | SMTP settings; password stored encrypted. |
 
 ### Command line
