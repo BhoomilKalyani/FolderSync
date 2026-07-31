@@ -88,8 +88,20 @@
                                       CellEditEnding="DestGrid_CellEditEnding">
                                 <DataGrid.Columns>
                                     <!-- Fixed columns first, star column last: that way the Mode
-                                         picker stays visible even if the grid has to scroll. -->
-                                    <DataGridCheckBoxColumn Header="On" Binding="{Binding Enabled}" Width="42"/>
+                                         picker stays visible even if the grid has to scroll.
+                                         Both tick boxes are template columns using the app's own
+                                         CheckBox style, so they look the same and respond to a
+                                         single click (a DataGridCheckBoxColumn needs edit mode). -->
+                                    <DataGridTemplateColumn Header="On" Width="46" SortMemberPath="Enabled">
+                                        <DataGridTemplateColumn.CellTemplate>
+                                            <DataTemplate>
+                                                <CheckBox HorizontalAlignment="Center"
+                                                          IsChecked="{Binding Enabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                          Click="EnabledCheck_Click"
+                                                          ToolTip="Include this destination when syncing."/>
+                                            </DataTemplate>
+                                        </DataGridTemplateColumn.CellTemplate>
+                                    </DataGridTemplateColumn>
                                     <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="150"/>
                                     <!-- A checkbox, not a combo box, on purpose: a cell ComboBox
                                          bound two-way resets to its first item whenever WPF

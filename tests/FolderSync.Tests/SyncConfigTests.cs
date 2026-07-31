@@ -94,6 +94,55 @@ public class SyncConfigTests
     }
 
     [Fact]
+    public void Changing_the_mode_notifies_both_Mirror_and_ModeText()
+    {
+        // The grid relies on this to update the Mode column. Without it the UI had to call
+        // DataGrid.Items.Refresh(), which throws while a cell is being edited.
+        var target = new SyncTarget { Mirror = false };
+        var raised = new List<string>();
+        target.PropertyChanged += (_, e) => raised.Add(e.PropertyName!);
+
+        target.Mirror = true;
+
+        Assert.Contains(nameof(SyncTarget.Mirror), raised);
+        Assert.Contains(nameof(SyncTarget.ModeText), raised);
+    }
+
+    [Theory]
+    [InlineData(nameof(SyncTarget.Enabled))]
+    [InlineData(nameof(SyncTarget.Name))]
+    [InlineData(nameof(SyncTarget.Destination))]
+    public void Editable_properties_raise_change_notifications(string property)
+    {
+        var target = new SyncTarget { Name = "a", Destination = @"C:\a", Enabled = true };
+        var raised = new List<string>();
+        target.PropertyChanged += (_, e) => raised.Add(e.PropertyName!);
+
+        switch (property)
+        {
+            case nameof(SyncTarget.Enabled): target.Enabled = false; break;
+            case nameof(SyncTarget.Name): target.Name = "b"; break;
+            default: target.Destination = @"C:\b"; break;
+        }
+
+        Assert.Contains(property, raised);
+    }
+
+    [Fact]
+    public void Re_assigning_the_same_value_raises_nothing()
+    {
+        var target = new SyncTarget { Enabled = true, Mirror = true, Name = "a" };
+        int count = 0;
+        target.PropertyChanged += (_, _) => count++;
+
+        target.Enabled = true;
+        target.Mirror = true;
+        target.Name = "a";
+
+        Assert.Equal(0, count);
+    }
+
+    [Fact]
     public void IsUnconfigured_is_true_until_a_source_and_a_destination_exist()
     {
         Assert.True(new SyncConfig().IsUnconfigured);

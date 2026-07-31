@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -5,12 +6,41 @@ using System.Text.Json.Serialization;
 
 namespace FolderSync;
 
-/// <summary>One source-to-destination copy job.</summary>
-public sealed class SyncTarget
+/// <summary>
+/// One source-to-destination copy job.
+///
+/// Raises change notifications so the grid can update dependent cells (the Mode text follows the
+/// Mirror tick) on its own. Without that the UI had to call DataGrid.Items.Refresh(), which throws
+/// if the grid happens to be in an edit transaction.
+/// </summary>
+public sealed class SyncTarget : INotifyPropertyChanged
 {
-    public string Name { get; set; } = "";
-    public string Destination { get; set; } = "";
-    public bool Enabled { get; set; } = true;
+    private string _name = "";
+    private string _destination = "";
+    private bool _enabled = true;
+    private bool? _mirror;
+
+    public event PropertyChangedEventHandler? PropertyChanged;
+
+    private void Notify(string name) => PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(name));
+
+    public string Name
+    {
+        get => _name;
+        set { if (_name != value) { _name = value; Notify(nameof(Name)); } }
+    }
+
+    public string Destination
+    {
+        get => _destination;
+        set { if (_destination != value) { _destination = value; Notify(nameof(Destination)); } }
+    }
+
+    public bool Enabled
+    {
+        get => _enabled;
+        set { if (_enabled != value) { _enabled = value; Notify(nameof(Enabled)); } }
+    }
 
     /// <summary>
     /// How this destination is synced: true = mirror (an exact copy, so deletions carry over),
@@ -20,7 +50,17 @@ public sealed class SyncTarget
     /// Nullable only for backwards compatibility: configs written before per-destination modes
     /// existed have no value here, and <see cref="SyncConfig.Load"/> fills it in on load.
     /// </summary>
-    public bool? Mirror { get; set; }
+    public bool? Mirror
+    {
+        get => _mirror;
+        set
+        {
+            if (_mirror == value) return;
+            _mirror = value;
+            Notify(nameof(Mirror));
+            Notify(nameof(ModeText));   // the read-only Mode column follows this
+        }
+    }
 
     /// <summary>The mode actually used; falls back to <paramref name="fallback"/> if unset.</summary>
     public bool MirrorEffective(bool fallback) => Mirror ?? fallback;

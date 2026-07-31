@@ -139,14 +139,24 @@ public partial class MainWindow : Window
     private void SourceBox_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
     private void Skip_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
 
-    /// <summary>A destination's Mirror tick changed — persist it and refresh the wording.</summary>
+    /// <summary>
+    /// A destination's Mirror tick changed. The Mode column updates itself because SyncTarget
+    /// raises a change notification — calling DataGrid.Items.Refresh() here used to crash the app,
+    /// because a refresh is illegal while the grid is in an edit transaction.
+    /// </summary>
     private void ModeCheck_Click(object sender, RoutedEventArgs e)
     {
         if (!_loaded) return;
         SaveConfig();
         UpdateRecycleNote();
-        // The read-only Mode column reads from ModeText, so ask the row to re-read it.
-        DestGrid.Items.Refresh();
+    }
+
+    /// <summary>A destination was switched on or off.</summary>
+    private void EnabledCheck_Click(object sender, RoutedEventArgs e)
+    {
+        if (!_loaded) return;
+        SaveConfig();
+        UpdateRecycleNote();
     }
 
     private void DestGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e) =>
