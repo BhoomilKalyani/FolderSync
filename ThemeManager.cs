@@ -56,7 +56,8 @@ public static class ThemeManager
             Set(r, "ControlBorder", "#4A4A4A");
             Set(r, "Fg", "#F0F0F0");
             Set(r, "FgMuted", "#A8ADB4");
-            Set(r, "HoverBg", "#FFFFFF14");
+            // #AARRGGBB - alpha first. A faint white wash for hover, not a solid colour.
+            Set(r, "HoverBg", "#14FFFFFF");
             Set(r, "Accent", "#4CA0E0");
             Set(r, "AccentHover", "#63AFE6");
             Set(r, "AccentPressed", "#3A8AC8");
@@ -74,7 +75,7 @@ public static class ThemeManager
             Set(r, "ControlBorder", "#D0D0D0");
             Set(r, "Fg", "#1B1B1B");
             Set(r, "FgMuted", "#5F6368");
-            Set(r, "HoverBg", "#00000010");
+            Set(r, "HoverBg", "#10000000");
             Set(r, "Accent", "#0F6CBD");
             Set(r, "AccentHover", "#1A7FD4");
             Set(r, "AccentPressed", "#0C5A9E");

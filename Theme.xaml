@@ -18,7 +18,8 @@
     <SolidColorBrush x:Key="ControlBorder" Color="#D0D0D0"/>
     <SolidColorBrush x:Key="Fg"         Color="#1B1B1B"/>
     <SolidColorBrush x:Key="FgMuted"    Color="#5F6368"/>
-    <SolidColorBrush x:Key="HoverBg"    Color="#00000010"/>
+    <!-- Colours are #AARRGGBB: the alpha comes FIRST. "#10000000" is a barely-there black wash. -->
+    <SolidColorBrush x:Key="HoverBg"    Color="#10000000"/>
     <SolidColorBrush x:Key="Ok"         Color="#0F7B0F"/>
     <SolidColorBrush x:Key="Bad"        Color="#C42B1C"/>
     <SolidColorBrush x:Key="Warn"       Color="#9D5D00"/>
