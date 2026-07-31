@@ -265,7 +265,7 @@ would point at a path that disappears on the next rebuild. The app warns you if 
 ### Releasing a new version
 
 1. Bump `<Version>` in `FolderSync.csproj`, then commit.
-2. `git tag v1.1.0 && git push origin v1.1.0`
+2. Tag it with a matching `v` prefix and push the tag, e.g. `git tag v1.1.1 && git push origin v1.1.1`
 
 That's it — the **Release** workflow runs the tests, builds the installer and publishes the GitHub
 release with the `.exe` attached. To do it by hand instead, run `.\build-installer.ps1` and upload
@@ -316,6 +316,32 @@ Detection reads the register Windows keeps of apps that sync a cloud account int
 (`Explorer\SyncRootManager`), so a service does not need to be known to this code to be found —
 install it and it appears. Google Drive is the one special case: it mounts a drive letter containing
 `My Drive` rather than registering, so that is probed separately.
+
+---
+
+## Version history
+
+### 1.1.1
+
+- **Cloud storage is found for you.** The Sync page lists the cloud services already installed on
+  the PC — Google Drive, OneDrive, iCloud, Dropbox and others — and sets one up as a destination in
+  a single click. No sign-in, no API keys, nothing to configure.
+- Detection reads the register Windows keeps of apps that sync a cloud account into a folder, so a
+  service does not have to be known to Folder Sync to be listed: install it and it appears, named
+  as Windows names it. Google Drive is handled separately, as it mounts a drive letter instead.
+- Crashes are written to `events.log` and reported, rather than the window closing silently.
+
+### 1.1.0
+
+- **Folder pairs.** Replaced the single source with as many independent pairs as you like, each with
+  its own sync type — Left → Right, Right → Left, or Two-way — and its own mirror setting.
+- Rebuilt the interface in WPF, with light and dark themes.
+
+### 1.0.0
+
+- First release: mirror one folder to several destinations, scheduling via Task Scheduler
+  (including at sign-in and screen unlock), preview, email notifications, deletion safety net,
+  health check, exclusion lists, system tray, and one-click updates.
 
 ---
 
