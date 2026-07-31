@@ -69,7 +69,8 @@ public sealed class SyncEngine
             Progress?.Invoke($"{(listOnly ? "Previewing" : "Syncing")} {i + 1} of {pairs.Count}: {pair.DisplayName}…");
 
             Emit("");
-            Emit($"--- {pair.DisplayName}   [{pair.DirectionText} · {pair.ModeText}]");
+            // Plain ASCII: logs get emailed and opened in editors that may not assume UTF-8.
+            Emit($"--- {pair.DisplayName}   [{AsciiDirection(pair)} | {pair.ModeText}]");
             Emit($"    left : {pair.Left}");
             Emit($"    right: {pair.Right}");
 
@@ -77,6 +78,7 @@ public sealed class SyncEngine
             {
                 Name = pair.DisplayName,
                 Destination = pair.Direction == SyncDirection.ToLeft ? pair.Left : pair.Right,
+                Success = true,   // starts good; any failing pass below clears it
             };
 
             string? problem = CheckPair(pair, listOnly);
@@ -95,7 +97,7 @@ public sealed class SyncEngine
             {
                 ct.ThrowIfCancellationRequested();
                 if (pair.Direction == SyncDirection.TwoWay)
-                    Emit($"    pass: {Path.GetFileName(pass.From.TrimEnd(Path.DirectorySeparatorChar))} → {Path.GetFileName(pass.To.TrimEnd(Path.DirectorySeparatorChar))}");
+                    Emit($"    pass: {Path.GetFileName(pass.From.TrimEnd(Path.DirectorySeparatorChar))} -> {Path.GetFileName(pass.To.TrimEnd(Path.DirectorySeparatorChar))}");
 
                 // Mirror safety net: move whatever the purge would delete aside first.
                 if (!listOnly && pass.Mirror && _config.RecycleDeletedFiles)
@@ -124,6 +126,13 @@ public sealed class SyncEngine
         Emit($"===== {verb} {(result.Success ? "completed" : "completed WITH ERRORS")} {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
         return result;
     }
+
+    private static string AsciiDirection(SyncPair pair) => pair.Direction switch
+    {
+        SyncDirection.ToRight => "left -> right",
+        SyncDirection.ToLeft => "right -> left",
+        _ => "two-way",
+    };
 
     /// <summary>Returns why a pair cannot run, or null if it is good to go.</summary>
     private string? CheckPair(SyncPair pair, bool listOnly)
