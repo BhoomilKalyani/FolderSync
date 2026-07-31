@@ -103,7 +103,7 @@
                                                           IsThreeState="False"
                                                           IsChecked="{Binding Mirror, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                           Click="ModeCheck_Click"
-                                                          ToolTip="Ticked = Mirror (exact copy, deletions carry over). Unticked = Additive (only adds and updates)."/>
+                                                          ToolTip="Ticked = Mirror: an exact copy, so deletions carry over.&#10;Unticked = Additive: only adds and updates, never deletes."/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>

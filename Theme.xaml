@@ -415,4 +415,34 @@
         <Setter Property="Margin" Value="0,10"/>
     </Style>
 
+    <!-- =========================== ToolTip ==========================
+         Templated for the same reason as the combo box drop-down: the stock tooltip renders on a
+         system-white surface, so themed (light) text on it is invisible. -->
+    <Style TargetType="ToolTip">
+        <Setter Property="Background" Value="{DynamicResource CardBg}"/>
+        <Setter Property="Foreground" Value="{DynamicResource Fg}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource CardBorder}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="11,8"/>
+        <Setter Property="MaxWidth" Value="320"/>
+        <Setter Property="HasDropShadow" Value="False"/>
+        <Setter Property="Template">
+            <Setter.Value>
+                <ControlTemplate TargetType="ToolTip">
+                    <Border Background="{TemplateBinding Background}"
+                            BorderBrush="{TemplateBinding BorderBrush}"
+                            BorderThickness="{TemplateBinding BorderThickness}"
+                            CornerRadius="6" Padding="{TemplateBinding Padding}">
+                        <!-- A TextBlock rather than a ContentPresenter: TextWrapping is not an
+                             inheritable property, and every tooltip here is plain text. -->
+                        <TextBlock Text="{TemplateBinding Content}" TextWrapping="Wrap"
+                                   Foreground="{DynamicResource Fg}"
+                                   FontFamily="{DynamicResource UiFont}" FontSize="12.5"
+                                   VerticalAlignment="Top"/>
+                    </Border>
+                </ControlTemplate>
+            </Setter.Value>
+        </Setter>
+    </Style>
+
 </ResourceDictionary>
