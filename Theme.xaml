@@ -239,7 +239,9 @@
         </Setter>
     </Style>
 
-    <Style TargetType="ComboBox">
+    <!-- Keyed as well as implicit: DataGridComboBoxColumn assigns its own explicit default style,
+         which beats an implicit one, so the column has to reference this by key. -->
+    <Style x:Key="ThemedComboBox" TargetType="ComboBox">
         <Setter Property="FontFamily" Value="{DynamicResource UiFont}"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Height" Value="30"/>
@@ -296,6 +298,9 @@
             </Setter.Value>
         </Setter>
     </Style>
+
+    <!-- Apply the themed combo box everywhere by default too. -->
+    <Style TargetType="ComboBox" BasedOn="{StaticResource ThemedComboBox}"/>
 
     <!-- ====================== Nav (sidebar) ========================= -->
     <Style x:Key="NavList" TargetType="ListBox">

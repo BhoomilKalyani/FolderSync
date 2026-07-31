@@ -90,7 +90,9 @@
                                     <DataGridComboBoxColumn x:Name="ModeColumn" Header="Mode" Width="110"
                                                             SelectedValueBinding="{Binding Mirror}"
                                                             SelectedValuePath="Value"
-                                                            DisplayMemberPath="Label"/>
+                                                            DisplayMemberPath="Label"
+                                                            ElementStyle="{StaticResource ThemedComboBox}"
+                                                            EditingElementStyle="{StaticResource ThemedComboBox}"/>
                                     <DataGridTextColumn Header="Folder" Binding="{Binding Destination}" Width="*" MinWidth="180"/>
                                 </DataGrid.Columns>
                             </DataGrid>
