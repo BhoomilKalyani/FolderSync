@@ -24,10 +24,12 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 | **Preview (dry run)** | See exactly what *would* be copied or deleted before committing to it. |
 | **Scheduling** | Daily, monthly, and **at sign-in / every screen unlock** — no admin rights needed. |
 | **Email notifications** | Optional summary email after each scheduled sync, with the log attached. |
+| **Restore deleted files** | Browse what a mirror moved aside and put files back into the source in a couple of clicks. |
 | **Health check** | One button that diagnoses everything that can silently stop a sync. |
 | **System tray** | Runs quietly in the tray with completion notifications. |
 | **Skip lists** | Exclude file patterns and folders. |
 | **Auto-update** | Notifies you when a new version is released and installs it in one click. |
+| **Light and dark** | Follows your Windows theme, with a manual toggle. |
 
 ---
 
@@ -53,10 +55,11 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 
 ## Getting started
 
-A fresh install starts empty — nothing is synced until you say so.
+A fresh install starts empty — nothing is synced until you say so. The window has five pages in
+the sidebar: **Sync**, **Schedule**, **Notifications**, **Recycled files** and **About**.
 
 1. **Source** — click **Browse…** and pick the folder you want to copy *from*.
-2. **Destinations** — click **Add Destination…** for each folder to copy *to*. Typical choices:
+2. **Destinations** — click **Add destination…** for each folder to copy *to*. Typical choices:
 
    | Target | Typical local folder |
    |---|---|
@@ -65,8 +68,10 @@ A fresh install starts empty — nothing is synced until you say so.
    | OneDrive | `%USERPROFILE%\OneDrive\…` |
    | External / backup drive | `D:\…` |
 
-3. Click **Preview** to see what would happen, then **Sync Now** to do it.
-4. Optionally tick **Enable automatic scheduling** and turn on the triggers you want.
+   Each row has two tick boxes: **On** includes it in a sync, and **Mirror** chooses the mode
+   (see below). New destinations arrive unticked — Additive — so nothing can be deleted by accident.
+3. Click **Preview** to see what would happen, then **Sync now** to do it.
+4. Optionally open **Schedule** and enable the triggers you want.
 
 > **About Google Drive:** use a folder under **`My Drive`**. The *"Other computers"* section is a
 > read-only view of backups from other machines and does not upload changes.
@@ -80,16 +85,15 @@ Everything you edit saves immediately — there is no Save button.
 
 ## Sync modes
 
-Every destination picks its own mode in the **Mode** column, so one source can feed a mirrored
-cloud folder and an add-only archive at the same time.
+Each destination has its own **Mirror** tick box, so one source can feed a mirrored cloud folder and
+an add-only archive at the same time. The **Mode** column spells out the current choice.
 
 | Mode | Behaviour |
 |---|---|
-| **Additive** (default for a new destination) | Only copies new and changed files. Never deletes anything. |
-| **Mirror** | Keeps the destination identical to the source, so files you delete are removed there too. |
+| **Additive** — Mirror unticked (default for a new destination) | Only copies new and changed files. Never deletes anything. |
+| **Mirror** — ticked | Keeps the destination identical to the source, so files you delete are removed there too. |
 
-New destinations start as **Additive** deliberately: nothing can be lost until you opt in to
-mirroring.
+New destinations start **Additive** deliberately: nothing can be lost until you opt in to mirroring.
 
 ### Recycled files
 
@@ -110,14 +114,17 @@ never mirrored (otherwise it would be purged itself) and batches older than
 
 ## Scheduling
 
-Tick **Enable automatic scheduling**, then per row use **Enable** / **Disable** / **Remove**.
-Buttons grey out to show the current state.
+On the **Schedule** page each trigger has its own row with **Enable** / **Disable** / **Remove**,
+and only the settings it needs. Buttons grey out to show the current state, and the pickers show the
+time a trigger is actually registered for — changing one takes effect when you press **Enable** again.
 
-| Trigger | When it runs |
-|---|---|
-| **Daily** | Every day at the chosen time. |
-| **Monthly** | On the chosen day of each month. |
-| **Logon / unlock** | When you sign in **and every time you unlock the screen**. |
+| Trigger | Settings | When it runs |
+|---|---|---|
+| **Daily** | time | Every day at the chosen time. |
+| **Monthly** | time + day | On the chosen day of each month. |
+| **Logon / unlock** | none | When you sign in **and every time you unlock the screen**. |
+
+Times are chosen from drop-downs rather than typed, so an impossible value can't be entered.
 
 On a laptop that sleeps and locks rather than shutting down, **logon/unlock** is the trigger that
 actually keeps things current. Because unlocking happens often, those runs are throttled to at most
@@ -223,19 +230,36 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download) and, for the installer,
 [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
+`global.json` pins the SDK to the 8.x line so local builds match CI.
 
 ```powershell
-dotnet build -c Release          # compile
-dotnet run                       # run from source
-.\build-installer.ps1            # produces dist\FolderSyncSetup-<version>.exe
+dotnet build FolderSync.sln -c Release                              # compile everything
+dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # run the unit tests
+dotnet run --project FolderSync.csproj                              # run from source
+.\build-installer.ps1                                               # dist\FolderSyncSetup-<version>.exe
 ```
+
+### Layout
+
+| Path | What it is |
+|---|---|
+| `*.cs`, `*.xaml` | The app. WPF for the UI, plus the sync engine, scheduler, updater and mailer. |
+| `tests/FolderSync.Tests` | xUnit tests for the parsing and path logic that has bitten us before. |
+| `installer/FolderSync.iss` | Inno Setup script. |
+| `build-installer.ps1` | Publishes self-contained, then compiles the installer. |
+| `.github/workflows` | `ci.yml` builds and tests every push; `release.yml` publishes a release from a tag. |
+
+Running from Visual Studio puts the exe in `bin\Debug\…`. Don't enable a schedule from there — it
+would point at a path that disappears on the next rebuild. The app warns you if you try.
 
 ### Releasing a new version
 
 1. Bump `<Version>` in `FolderSync.csproj`, then commit.
-2. `.\build-installer.ps1`
-3. `git tag v1.1.0 && git push origin v1.1.0`
-4. Create a GitHub **release** for that tag and attach the setup `.exe`.
+2. `git tag v1.1.0 && git push origin v1.1.0`
+
+That's it — the **Release** workflow runs the tests, builds the installer and publishes the GitHub
+release with the `.exe` attached. To do it by hand instead, run `.\build-installer.ps1` and upload
+`dist\FolderSyncSetup-<version>.exe` to a release yourself.
 
 Existing installs compare the release **tag** against their own version and download the first
 `.exe` asset attached to it.
@@ -264,6 +288,12 @@ Google Drive  iCloud    OneDrive     Backup drive
   the recycle folder before the real mirror runs.
 - Task Scheduler provides automation; the app itself doesn't need to stay running.
 
+---
+
+## Author
+
+Developed by **Bhoomil Kalyani** — <bhoomil.kalyani999@gmail.com>
+
 ## Licence
 
-MIT — see [LICENSE](LICENSE).
+Copyright © 2026 Bhoomil Kalyani. Released under the MIT Licence — see [LICENSE](LICENSE).
