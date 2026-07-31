@@ -1,0 +1,16 @@
+# Build output
+bin/
+obj/
+publish/
+
+# Installer output (attach these to a GitHub release instead of committing them)
+dist/
+
+# User-specific / IDE
+.vs/
+*.user
+*.suo
+
+# Local config & logs (created at runtime under %LOCALAPPDATA%, not here)
+config.json
+*.log

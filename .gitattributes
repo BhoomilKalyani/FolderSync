@@ -1,0 +1,9 @@
+# Normalize line endings; check out Windows-style CRLF for this Windows project.
+* text=auto eol=crlf
+
+# Explicit text types
+*.cs       text
+*.csproj   text
+*.md       text
+*.gitignore text
+*.gitattributes text

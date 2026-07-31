@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UseWindowsForms>true</UseWindowsForms>
+    <AssemblyName>FolderSync</AssemblyName>
+    <RootNamespace>FolderSync</RootNamespace>
+
+    <!-- Bump this to release an update; the installer and the update check both read it. -->
+    <Version>1.0.0</Version>
+    <Company>Bhoomil Kalyani</Company>
+    <Product>Folder Sync</Product>
+    <Description>Mirrors a folder to multiple local cloud-sync folders (OneDrive, iCloud, Google Drive).</Description>
+
+    <ApplicationIcon>FolderSync.ico</ApplicationIcon>
+    <!-- build-installer.ps1 publishes a self-contained win-x64 build for the installer. -->
+    <SelfContained>false</SelfContained>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MailKit" Version="4.17.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.9" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Embedded so the window and tray can use the full multi-size icon at runtime. -->
+    <EmbeddedResource Include="FolderSync.ico" LogicalName="FolderSync.ico" />
+  </ItemGroup>
+
+</Project>
