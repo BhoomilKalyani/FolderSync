@@ -5,12 +5,26 @@ using System.Text.Json.Serialization;
 
 namespace FolderSync;
 
-/// <summary>One source-to-destination mirroring job.</summary>
+/// <summary>One source-to-destination copy job.</summary>
 public sealed class SyncTarget
 {
     public string Name { get; set; } = "";
     public string Destination { get; set; } = "";
     public bool Enabled { get; set; } = true;
+
+    /// <summary>
+    /// Overrides the global mode for this destination: true = mirror, false = additive,
+    /// null = follow <see cref="SyncConfig.Mirror"/>. Lets you mirror to a cloud folder while
+    /// a backup drive keeps everything (never deletes).
+    /// </summary>
+    public bool? Mirror { get; set; }
+
+    /// <summary>The mode actually used, resolving the override against the global setting.</summary>
+    public bool MirrorEffective(bool globalMirror) => Mirror ?? globalMirror;
+
+    /// <summary>How the mode shows in the UI: "Mirror", "Additive", or "(default)".</summary>
+    [JsonIgnore]
+    public string ModeText => Mirror is null ? "(default)" : Mirror.Value ? "Mirror" : "Additive";
 }
 
 /// <summary>When a scheduled sync should send a notification email.</summary>

@@ -30,4 +30,13 @@
     <EmbeddedResource Include="FolderSync.ico" LogicalName="FolderSync.ico" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- This project sits at the repo root, so the SDK's default **\*.cs glob would otherwise
+         compile the test project's sources into the app as well. -->
+    <Compile Remove="tests\**" />
+    <None Remove="tests\**" />
+    <Compile Remove="dist\**" />
+    <None Remove="dist\**" />
+  </ItemGroup>
+
 </Project>

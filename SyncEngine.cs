@@ -66,10 +66,11 @@ public sealed class SyncEngine
         {
             ct.ThrowIfCancellationRequested();
             var target = enabled[i];
+            bool mirror = target.MirrorEffective(_config.Mirror);
             Progress?.Invoke($"{(listOnly ? "Previewing" : "Syncing")} {i + 1} of {enabled.Count}: {target.Name}…");
 
             Emit("");
-            Emit($"--- {target.Name}  ->  {target.Destination}");
+            Emit($"--- {target.Name}  ->  {target.Destination}   [{(mirror ? "mirror" : "additive")}]");
 
             // Safety: never let a (mirror) sync target the source itself or a folder nested
             // with it — that could delete data or loop endlessly.
@@ -107,16 +108,16 @@ public sealed class SyncEngine
 
             // Mirror safety net: move files that mirror would purge into a dated folder first.
             int recycled = 0;
-            if (!listOnly && _config.Mirror && _config.RecycleDeletedFiles)
-                recycled = await RecycleExtrasAsync(_config.Source, target.Destination, ct);
+            if (!listOnly && mirror && _config.RecycleDeletedFiles)
+                recycled = await RecycleExtrasAsync(_config.Source, target.Destination, mirror, ct);
 
-            var tr = await RunRobocopyAsync(_config.Source, target.Destination, ct, listOnly);
+            var tr = await RunRobocopyAsync(_config.Source, target.Destination, ct, listOnly, mirror);
             tr.Name = target.Name;
             tr.FilesRecycled = recycled;
             result.Targets.Add(tr);
             if (!tr.Success) result.Success = false;
 
-            if (!listOnly && _config.Mirror && _config.RecycleDeletedFiles)
+            if (!listOnly && mirror && _config.RecycleDeletedFiles)
                 PruneRecycleFolder(target.Destination);
 
             Emit($"--- {target.Name}: {(tr.Success ? "OK" : "FAILED")} (robocopy exit {tr.ExitCode}) {tr.Summary}");
@@ -148,14 +149,14 @@ public sealed class SyncEngine
         return sb.ToString();
     }
 
-    private async Task<TargetResult> RunRobocopyAsync(string src, string dst, CancellationToken ct, bool listOnly)
+    private async Task<TargetResult> RunRobocopyAsync(string src, string dst, CancellationToken ct, bool listOnly, bool mirror)
     {
         // /MIR  = mirror (copy + purge extras) ; for additive we use /E (copy subdirs incl. empty)
         // /R:2 /W:2 = 2 retries, 2s wait      ; /MT:16 = 16 threads
         // /FFT  = relaxed (2s) timestamp compare, friendlier to cloud-sync drives
         // /XJ   = skip junctions (avoids loops) ; /NP = no per-file percent (cleaner log)
         // /NDL  = no dir listing                 ; /L = list only (preview, makes no changes)
-        string copyMode = _config.Mirror ? "/MIR" : "/E";
+        string copyMode = mirror ? "/MIR" : "/E";
         string listFlag = listOnly ? " /L" : "";
         string args = $"\"{src}\" \"{dst}\" {copyMode} /R:2 /W:2 /MT:16 /FFT /XJ /NP /NDL{listFlag}{BuildExclusionArgs(dst)}";
 
@@ -167,7 +168,11 @@ public sealed class SyncEngine
             Emit("    " + line);
             if (line.Contains("Files :") || line.Contains("Dirs :") || line.Contains("Bytes :"))
                 summary.Append(line.Trim()).Append("  ");
-            ParseCountsLine(line, tr);
+            if (RobocopyOutput.TryParseFilesSummary(line, out int copied, out int failed))
+            {
+                tr.FilesCopied = copied;
+                tr.FilesFailed = failed;
+            }
         }, ct);
 
         tr.ExitCode = exit;
@@ -175,24 +180,6 @@ public sealed class SyncEngine
         tr.Success = exit < 8;
         tr.Summary = summary.ToString().Trim();
         return tr;
-    }
-
-    /// <summary>
-    /// Pulls "Copied" and "FAILED" counts out of robocopy's summary table, e.g.
-    /// "Files :  2201  462  1739  0  0  0" -> copied 462, failed 0. Ignores the
-    /// header line ("Files : *.*"), which has no numeric columns.
-    /// </summary>
-    private static void ParseCountsLine(string line, TargetResult tr)
-    {
-        int colon = line.IndexOf(':');
-        if (colon < 0 || !line.TrimStart().StartsWith("Files", StringComparison.OrdinalIgnoreCase)) return;
-
-        var parts = line[(colon + 1)..].Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
-        if (parts.Length < 6) return;                                   // not the summary row
-        if (!parts.All(p => int.TryParse(p, out _))) return;            // e.g. "*.*" header
-
-        tr.FilesCopied = int.Parse(parts[1]);
-        tr.FilesFailed = int.Parse(parts[4]);
     }
 
     /// <summary>
@@ -209,15 +196,7 @@ public sealed class SyncEngine
 
         await RunRobocopyProcessAsync(args, line =>
         {
-            if (!line.Contains("*EXTRA", StringComparison.OrdinalIgnoreCase)) return;
-
-            // Paths are absolute, so locate the destination root rather than parsing columns
-            // (robocopy's size column can read "1.7 m", which defeats splitting on whitespace).
-            int idx = line.IndexOf(dst, StringComparison.OrdinalIgnoreCase);
-            if (idx < 0) return;
-
-            string path = line[idx..].Trim().TrimEnd(Path.DirectorySeparatorChar);
-            if (path.Length > dst.Length) extras.Add(path);
+            if (RobocopyOutput.TryParseExtraPath(line, dst, out var path)) extras.Add(path);
         }, ct);
 
         return extras;
@@ -227,7 +206,7 @@ public sealed class SyncEngine
     /// Moves everything a mirror is about to purge into "&lt;destination&gt;\_FolderSyncTrash\&lt;timestamp&gt;",
     /// preserving relative paths, so an accidental source deletion stays recoverable.
     /// </summary>
-    private async Task<int> RecycleExtrasAsync(string src, string dst, CancellationToken ct)
+    private async Task<int> RecycleExtrasAsync(string src, string dst, bool mirror, CancellationToken ct)
     {
         List<string> extras;
         try { extras = await ListExtrasAsync(src, dst, ct); }

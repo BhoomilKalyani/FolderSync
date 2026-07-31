@@ -11,6 +11,10 @@ dist/
 *.user
 *.suo
 
+# Test results
+TestResults/
+[Tt]est[Rr]esults/
+
 # Local config & logs (created at runtime under %LOCALAPPDATA%, not here)
 config.json
 *.log
