@@ -8,6 +8,9 @@ public sealed class TargetResult
 {
     public string Name { get; set; } = "";
     public string Destination { get; set; } = "";
+
+    /// <summary>Identifies which pair this was, so per-pair history survives a rename.</summary>
+    public string PairKey { get; set; } = "";
     public int ExitCode { get; set; }
     public bool Success { get; set; }
     public string Summary { get; set; } = "";
@@ -15,8 +18,19 @@ public sealed class TargetResult
     public int FilesFailed { get; set; }
     /// <summary>Files moved aside to the recycle folder instead of being purged by mirror.</summary>
     public int FilesRecycled { get; set; }
+    /// <summary>Previous versions kept when a newer copy from the other side replaced them.</summary>
+    public int FilesBackedUp { get; set; }
     /// <summary>Short explanation when a destination was skipped or failed before copying.</summary>
     public string Note { get; set; } = "";
+
+    /// <summary>
+    /// The pair did not run for a reason that is not a fault — currently only an unmounted drive.
+    /// Skipped pairs deliberately do not make the whole run a failure, so an unplugged backup drive
+    /// does not raise an alarm every day.
+    /// </summary>
+    public bool Skipped { get; set; }
+
+    public string ResultText => Skipped ? "Skipped" : Success ? "OK" : "Failed";
 }
 
 public sealed class SyncResult
@@ -82,13 +96,26 @@ public sealed class SyncEngine
             {
                 Name = pair.DisplayName,
                 Destination = pair.Direction == SyncDirection.ToLeft ? pair.Left : pair.Right,
+                PairKey = PairHistory.KeyFor(pair.Left, pair.Right),
                 Success = true,   // starts good; any failing pass below clears it
             };
+
+            // An unmounted drive is not a fault - the pair simply waits until the drive is back.
+            if (pair.MissingDrive() is { } offline)
+            {
+                string note = $"drive not connected: {offline}";
+                Emit($"    SKIPPED: {note}");
+                outcome.Skipped = true;
+                outcome.Summary = note;
+                outcome.Note = note;
+                result.Targets.Add(outcome);      // deliberately does not clear result.Success
+                continue;
+            }
 
             string? problem = CheckPair(pair, listOnly);
             if (problem is not null)
             {
-                Emit($"    SKIPPED: {problem}");
+                Emit($"    FAILED: {problem}");
                 outcome.Success = false;
                 outcome.Summary = problem;
                 outcome.Note = problem;
@@ -103,9 +130,33 @@ public sealed class SyncEngine
                 if (pair.Direction == SyncDirection.TwoWay)
                     Emit($"    pass: {Leaf(pass.From)} -> {Leaf(pass.To)}");
 
-                // Mirror safety net: move whatever the purge would delete aside first.
-                if (!listOnly && pass.Mirror && _config.RecycleDeletedFiles)
-                    outcome.FilesRecycled += await RecycleExtrasAsync(pass.From, pass.To, pass.Mirror, ct);
+                if (!listOnly && pass.Mirror)
+                {
+                    // Everything a mirror would delete, found with a list-only pass so nothing has
+                    // changed yet. Used first to decide whether the deletion looks like a mistake,
+                    // and then to move the files aside.
+                    var doomed = await FindDeletionsAsync(pass.From, pass.To, ct);
+
+                    if (StoppedByGuard(pass.To, doomed.Files, out string guardReason))
+                    {
+                        Emit($"    STOPPED: {guardReason}");
+                        Emit("    Nothing was deleted or copied for this pair. Check the sending folder, "
+                           + "then sync again. (Adjust or switch this off with GuardLargeDeletions in config.json.)");
+                        outcome.Success = false;
+                        outcome.Summary = guardReason;
+                        outcome.Note = guardReason;
+                        result.Success = false;
+                        break;      // leave this pair completely untouched
+                    }
+
+                    if (_config.RecycleDeletedFiles)
+                        outcome.FilesRecycled += await RecycleAsync(doomed.All, pass.To, ct);
+                }
+
+                // Two-way: the copy that loses to a newer version on the other side would otherwise
+                // be overwritten and gone, so keep it alongside the deletions.
+                if (!listOnly && pass.SkipOlder && _config.BackupOverwrittenFiles && _config.RecycleDeletedFiles)
+                    outcome.FilesBackedUp += await BackupOverwritesAsync(pass.From, pass.To, ct);
 
                 var tr = await RunRobocopyAsync(pass, ct, listOnly);
                 outcome.FilesCopied += tr.FilesCopied;
@@ -121,10 +172,15 @@ public sealed class SyncEngine
             result.Targets.Add(outcome);
             if (!outcome.Success) result.Success = false;
 
-            Emit($"--- {pair.DisplayName}: {(outcome.Success ? "OK" : "FAILED")} "
+            Emit($"--- {pair.DisplayName}: {outcome.ResultText.ToUpperInvariant()} "
                + $"(copied {outcome.FilesCopied}, failed {outcome.FilesFailed}"
-               + (outcome.FilesRecycled > 0 ? $", recycled {outcome.FilesRecycled}" : "") + ")");
+               + (outcome.FilesRecycled > 0 ? $", recycled {outcome.FilesRecycled}" : "")
+               + (outcome.FilesBackedUp > 0 ? $", previous versions kept {outcome.FilesBackedUp}" : "") + ")");
         }
+
+        int skipped = result.Targets.Count(t => t.Skipped);
+        if (skipped > 0)
+            Emit($"\n{skipped} pair(s) skipped because a drive was not connected. This is not counted as an error.");
 
         Emit("");
         Emit($"===== {verb} {(result.Success ? "completed" : "completed WITH ERRORS")} {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
@@ -219,38 +275,137 @@ public sealed class SyncEngine
         return tr;
     }
 
+    /// <summary>Everything a mirror would remove: all entries, plus how many of them are files.</summary>
+    /// <param name="All">Files and folders, for moving aside. A folder brings its contents with it.</param>
+    /// <param name="Files">
+    /// File count only. robocopy lists an extra folder <em>and</em> each file inside it, so this is the
+    /// true number of files at risk — the figure the guard needs, without walking the tree again.
+    /// </param>
+    private readonly record struct Deletions(List<string> All, int Files);
+
     /// <summary>
     /// Finds what a mirror would delete from the destination (robocopy's "*EXTRA" entries),
     /// using a list-only pass so nothing is changed yet.
     /// </summary>
-    private async Task<List<string>> ListExtrasAsync(string src, string dst, CancellationToken ct)
+    private async Task<Deletions> FindDeletionsAsync(string src, string dst, CancellationToken ct)
     {
         // /NJH /NJS strip the header/summary so only the item lines remain.
         // /NDL is essential: without it robocopy prints directory headers followed by bare file
         // names, and the full path needed below is missing for files (directories always show one).
         string args = $"\"{src}\" \"{dst}\" /MIR /L /R:0 /W:0 /FFT /XJ /NP /NDL /NJH /NJS{BuildExclusionArgs(dst)}";
-        var extras = new List<string>();
+        var all = new List<string>();
+        int files = 0;
 
-        await RunRobocopyProcessAsync(args, line =>
+        try
         {
-            if (RobocopyOutput.TryParseExtraPath(line, dst, out var path)) extras.Add(path);
-        }, ct);
+            await RunRobocopyProcessAsync(args, line =>
+            {
+                if (!RobocopyOutput.TryParseExtraPath(line, dst, out var path)) return;
+                all.Add(path);
+                if (RobocopyOutput.IsExtraFile(line)) files++;
+            }, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Emit($"    WARNING: could not check for deletions: {ex.Message}");
+            return new Deletions(new List<string>(), 0);
+        }
 
-        return extras;
+        return new Deletions(all, files);
+    }
+
+    /// <summary>
+    /// Whether the guard blocks this mirror. Counting the destination is only done when there is
+    /// actually something to delete, so an ordinary sync pays nothing for the check.
+    /// </summary>
+    private bool StoppedByGuard(string dst, int filesToDelete, out string reason)
+    {
+        reason = "";
+        if (!_config.GuardLargeDeletions || filesToDelete <= 0) return false;
+
+        int atDestination = DeletionGuard.CountFiles(dst, _config.RecycleFolderName);
+
+        return DeletionGuard.ShouldStop(
+            filesToDelete, atDestination,
+            _config.LargeDeletionMinimumFiles, _config.LargeDeletionPercent, out reason);
+    }
+
+    /// <summary>
+    /// Copies each file that a newer version from the other side is about to overwrite into the
+    /// recycle folder, so the losing version is recoverable.
+    ///
+    /// This is what makes a two-way pair safe. "Newer wins" otherwise means the older copy is
+    /// destroyed with no record, and unlike a deletion there is nothing left to restore from.
+    ///
+    /// Copies rather than moves: the file has to stay where it is for robocopy to overwrite it.
+    /// </summary>
+    private async Task<int> BackupOverwritesAsync(string src, string dst, CancellationToken ct)
+    {
+        // Same flags as the real pass, so this sees exactly the files that pass will replace.
+        string args = $"\"{src}\" \"{dst}\" /E /L /XO /R:0 /W:0 /FFT /XJ /NP /NDL /NJH /NJS{BuildExclusionArgs(dst)}";
+        var overwritten = new List<string>();
+
+        try
+        {
+            await RunRobocopyProcessAsync(args, line =>
+            {
+                // "Newer" means the destination holds an older copy of this file. "New File" does not
+                // exist there at all and so overwrites nothing.
+                if (RobocopyOutput.TryParseOverwrittenSourcePath(line, src, out var sourcePath))
+                    overwritten.Add(sourcePath);
+            }, ct);
+        }
+        catch (OperationCanceledException) { throw; }
+        catch (Exception ex)
+        {
+            Emit($"    WARNING: could not check for overwrites: {ex.Message}");
+            return 0;
+        }
+
+        if (overwritten.Count == 0) return 0;
+
+        string trashRoot = Path.Combine(RecycleRoot(dst), DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+        int kept = 0;
+
+        foreach (var sourcePath in overwritten)
+        {
+            ct.ThrowIfCancellationRequested();
+            try
+            {
+                string relative = Path.GetRelativePath(src, sourcePath);
+                string existing = Path.Combine(dst, relative);
+                if (!File.Exists(existing)) continue;      // vanished between the check and now
+
+                string backup = Path.Combine(trashRoot, relative);
+                Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
+                File.Copy(existing, backup, overwrite: true);
+                kept++;
+            }
+            catch (Exception ex)
+            {
+                Emit($"    WARNING: could not keep the previous version of '{sourcePath}': {ex.Message}");
+            }
+        }
+
+        if (kept > 0)
+        {
+            Emit($"    {kept} file(s) changed on both sides; the newer copy wins and the previous "
+               + $"version was kept -> {trashRoot}");
+            Emit("    (A two-way pair cannot tell a genuine conflict from an ordinary update without a "
+               + "record of the previous run, so every replaced file is kept.)");
+        }
+        return kept;
     }
 
     /// <summary>
     /// Moves everything a mirror is about to purge into "&lt;destination&gt;\_FolderSyncTrash\&lt;timestamp&gt;",
     /// preserving relative paths, so an accidental source deletion stays recoverable.
     /// </summary>
-    private async Task<int> RecycleExtrasAsync(string src, string dst, bool mirror, CancellationToken ct)
+    private async Task<int> RecycleAsync(List<string> extras, string dst, CancellationToken ct)
     {
-        List<string> extras;
-        try { extras = await ListExtrasAsync(src, dst, ct); }
-        catch (OperationCanceledException) { throw; }
-        catch (Exception ex) { Emit($"    WARNING: could not check for deletions: {ex.Message}"); return 0; }
-
         if (extras.Count == 0) return 0;
+        await Task.CompletedTask;   // keeps the call site uniform with the other async steps
 
         string trashRoot = Path.Combine(RecycleRoot(dst), DateTime.Now.ToString("yyyyMMdd-HHmmss"));
         int moved = 0;

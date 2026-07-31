@@ -167,6 +167,24 @@ public sealed class SyncConfig
     /// <summary>Folder (inside each destination) that holds moved-aside files. Never mirrored.</summary>
     public string RecycleFolderName { get; set; } = "_FolderSyncTrash";
 
+    /// <summary>
+    /// Stop a mirror that would delete an unexpectedly large share of the receiving side, instead of
+    /// going ahead. See <see cref="DeletionGuard"/> for why this matters.
+    /// </summary>
+    public bool GuardLargeDeletions { get; set; } = true;
+
+    /// <summary>Share of the receiving side that, once exceeded, is treated as suspicious.</summary>
+    public int LargeDeletionPercent { get; set; } = 25;
+
+    /// <summary>Never treat fewer files than this as suspicious, whatever the percentage.</summary>
+    public int LargeDeletionMinimumFiles { get; set; } = 25;
+
+    /// <summary>
+    /// In a two-way pair, keep the copy that loses to a newer version on the other side, rather than
+    /// letting it be overwritten and lost. Uses the same recycle folder as deletions.
+    /// </summary>
+    public bool BackupOverwrittenFiles { get; set; } = true;
+
     /// <summary>Check GitHub for a newer release when the app starts (at most once a day).</summary>
     public bool CheckForUpdates { get; set; } = true;
 

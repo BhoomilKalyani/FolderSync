@@ -86,6 +86,20 @@ public sealed class SyncPair : INotifyPropertyChanged
     [JsonIgnore]
     public bool DeletesExtras => Direction != SyncDirection.TwoWay && Mirror;
 
+    private string _lastRunText = "Never run";
+
+    /// <summary>
+    /// How this pair finished last time, for the grid. Runtime state filled in from
+    /// <see cref="PairHistory"/> — deliberately not saved with the pair, which describes intent
+    /// rather than outcome.
+    /// </summary>
+    [JsonIgnore]
+    public string LastRunText
+    {
+        get => _lastRunText;
+        set { if (_lastRunText != value) { _lastRunText = value; Notify(nameof(LastRunText)); } }
+    }
+
     [JsonIgnore]
     public string DirectionText => Direction switch
     {
@@ -142,6 +156,24 @@ public sealed class SyncPair : INotifyPropertyChanged
             new SyncPass(Right, Left, false, true),
         },
     };
+
+    /// <summary>
+    /// The folder whose drive is not currently mounted, or null when both sides are reachable.
+    ///
+    /// Kept apart from <see cref="ValidateFolders"/> because an absent drive is not a fault: a USB or
+    /// network backup drive that isn't plugged in should let the pair be skipped quietly. Reporting it
+    /// as a failure means a daily schedule emails an error every day the drive is unplugged, which
+    /// trains the reader to ignore the emails and so hides the failures that do matter.
+    /// </summary>
+    public string? MissingDrive()
+    {
+        foreach (var side in new[] { Left, Right })
+        {
+            if (string.IsNullOrWhiteSpace(side)) continue;
+            if (!PathUtil.DriveAvailable(side)) return side;
+        }
+        return null;
+    }
 
     /// <summary>Why this pair cannot run, ignoring the filesystem, or null when it looks usable.</summary>
     public string? Validate()

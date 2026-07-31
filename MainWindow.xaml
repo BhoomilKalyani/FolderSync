@@ -127,9 +127,10 @@
                                     </DataGridTemplateColumn>
                                     <!-- OneWay throughout: these are computed, read-only properties and a
                                          DataGridTextColumn binding is TwoWay unless told otherwise. -->
-                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName, Mode=OneWay}" Width="140"/>
-                                    <DataGridTextColumn Header="Sync type" Binding="{Binding DirectionText, Mode=OneWay}" Width="110"/>
-                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText, Mode=OneWay}" Width="150"/>
+                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName, Mode=OneWay}" Width="130"/>
+                                    <DataGridTextColumn Header="Last run" Binding="{Binding LastRunText, Mode=OneWay}" Width="130"/>
+                                    <DataGridTextColumn Header="Sync type" Binding="{Binding DirectionText, Mode=OneWay}" Width="105"/>
+                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText, Mode=OneWay}" Width="140"/>
                                     <DataGridTextColumn Header="Left folder" Binding="{Binding Left, Mode=OneWay}" Width="*" MinWidth="150"/>
                                     <DataGridTextColumn Header="Right folder" Binding="{Binding Right, Mode=OneWay}" Width="*" MinWidth="150"/>
                                 </DataGrid.Columns>
@@ -196,9 +197,11 @@
                                 <DataGrid.Columns>
                                     <DataGridTextColumn Header="Destination" Binding="{Binding Name, Mode=OneWay}" Width="150"/>
                                     <DataGridTextColumn Header="Result" Binding="{Binding ResultText, Mode=OneWay}" Width="110"/>
-                                    <DataGridTextColumn Header="Copied" Binding="{Binding FilesCopied}" Width="70"/>
-                                    <DataGridTextColumn Header="Failed" Binding="{Binding FilesFailed}" Width="70"/>
-                                    <DataGridTextColumn Header="Recycled" Binding="{Binding FilesRecycled}" Width="80"/>
+                                    <DataGridTextColumn Header="Copied" Binding="{Binding FilesCopied, Mode=OneWay}" Width="70"/>
+                                    <DataGridTextColumn Header="Failed" Binding="{Binding FilesFailed, Mode=OneWay}" Width="70"/>
+                                    <DataGridTextColumn Header="Recycled" Binding="{Binding FilesRecycled, Mode=OneWay}" Width="75"/>
+                                    <DataGridTextColumn Header="Kept" Binding="{Binding FilesBackedUp, Mode=OneWay}" Width="60"
+                                                        ToolTipService.ToolTip="Previous versions kept when a newer copy replaced them"/>
                                     <DataGridTextColumn Header="Folder" Binding="{Binding Destination}" Width="*"/>
                                 </DataGrid.Columns>
                             </DataGrid>

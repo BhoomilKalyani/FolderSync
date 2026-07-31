@@ -61,4 +61,47 @@ public static class RobocopyOutput
         path = candidate;
         return true;
     }
+
+    /// <summary>
+    /// True for an "*EXTRA File" line, as opposed to "*EXTRA Dir".
+    ///
+    /// Worth separating because robocopy lists an extra directory <em>and</em> every file inside it,
+    /// so counting only the file lines gives the true number of files a mirror would delete without
+    /// having to walk the tree again. Verified against robocopy on Windows 11:
+    /// <code>
+    /// \t*EXTRA Dir        -1\tC:\dst\extradir\
+    /// \t  *EXTRA File \t\t     17\tC:\dst\extradir\a.txt
+    /// </code>
+    /// </summary>
+    public static bool IsExtraFile(string line) =>
+        line.Contains("*EXTRA File", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Pulls the source path out of a "Newer" line — a file that exists on both sides where the
+    /// source copy wins, so the destination copy is about to be overwritten and lost.
+    ///
+    /// Distinct from "New File", which does not exist at the destination and so overwrites nothing.
+    /// Verified against robocopy: <c>"\t    Newer     \t\t      16\tC:\src\shared.txt"</c>.
+    /// </summary>
+    public static bool TryParseOverwrittenSourcePath(string line, string sourceRoot, out string path)
+    {
+        path = "";
+        if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(sourceRoot)) return false;
+
+        // "Newer" only, never "New File": the two would otherwise be easy to confuse, and backing up
+        // a file that does not exist yet is impossible.
+        if (!line.Contains("Newer", StringComparison.Ordinal)) return false;
+
+        string root = sourceRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        int idx = line.IndexOf(root, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return false;
+
+        // Located by searching for the root rather than splitting on whitespace, because the size
+        // column can read "1.7 m" - two tokens.
+        string candidate = line[idx..].Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        if (candidate.Length <= root.Length) return false;
+
+        path = candidate;
+        return true;
+    }
 }

@@ -63,6 +63,7 @@ public partial class MainWindow : Window
         PairGrid.ItemsSource = _pairs;
         LoadConfigIntoUi();
         RefreshMountedCloud();
+        RefreshPairStatuses();
         BuildScheduleRows();
         LoadScheduleTimesFromTasks();
         RefreshLastRunSummary();
@@ -120,6 +121,21 @@ public partial class MainWindow : Window
     {
         _config.Pairs.Clear();
         _config.Pairs.AddRange(_pairs);
+    }
+
+    /// <summary>
+    /// Fills in each pair's "Last run" column from the stored per-pair history, so a pair that has
+    /// been quietly failing is obvious without opening a log.
+    /// </summary>
+    private void RefreshPairStatuses()
+    {
+        var history = PairHistory.Load();
+        foreach (var pair in _pairs)
+        {
+            pair.LastRunText = history.TryGetValue(PairHistory.KeyFor(pair.Left, pair.Right), out var status)
+                ? status.Text
+                : "Never run";
+        }
     }
 
     private void SaveConfig()
@@ -280,22 +296,28 @@ public partial class MainWindow : Window
             return;
         }
 
+        // An unplugged drive is not a problem to be warned about - the pair just waits for it - so it
+        // is separated out from genuine faults rather than being mixed into an alarming list.
+        var offline = active.Where(p => p.MissingDrive() is not null).ToList();
+        var runnable = active.Except(offline).ToList();
+
         // Uses the pair's own rule, so this warning always matches what the engine will actually do.
-        var broken = active.Select(p => (pair: p, problem: p.ValidateFolders()))
-                           .Where(x => x.problem is not null)
-                           .ToList();
+        var broken = runnable.Select(p => (pair: p, problem: p.ValidateFolders()))
+                             .Where(x => x.problem is not null)
+                             .ToList();
+
         if (broken.Count > 0)
         {
-            if (broken.Count == active.Count)
+            string list = string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}"));
+
+            if (broken.Count == runnable.Count)
             {
                 MessageWindow.Warn(this, "Nothing can be synced",
-                    "Every enabled pair has a problem:\n\n"
-                    + string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}")));
+                    $"Every pair that could run has a problem:\n\n{list}");
                 Status = "Fix the folder pairs and try again.";
                 return;
             }
 
-            string list = string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}"));
             if (!MessageWindow.Confirm(this, "Some pairs cannot run",
                     $"These pairs will be skipped:\n\n{list}\n\nContinue with the rest?",
                     primary: "Sync anyway", tone: DialogTone.Warning))
@@ -303,6 +325,15 @@ public partial class MainWindow : Window
                 Status = "Cancelled.";
                 return;
             }
+        }
+        else if (offline.Count == active.Count)
+        {
+            MessageWindow.Info(this, "Nothing to sync yet",
+                "Every enabled pair uses a drive that is not connected:\n\n"
+                + string.Join("\n", offline.Select(p => $"  • {p.DisplayName} — {p.MissingDrive()}"))
+                + "\n\nConnect the drive and sync again. This is not an error.");
+            Status = "Waiting for a drive to be connected.";
+            return;
         }
 
         _cts = new CancellationTokenSource();
@@ -353,11 +384,16 @@ public partial class MainWindow : Window
         if (result is null) return;
 
         LastRun.Save(result);
+        PairHistory.Record(result);
         RefreshLastRunSummary();
+        RefreshPairStatuses();
+
+        int skipped = result.Targets.Count(t => t.Skipped);
+        string skippedNote = skipped > 0 ? $" {skipped} skipped (drive not connected)." : "";
 
         Status = result.Success
-            ? $"Done — {DateTime.Now:HH:mm:ss}."
-            : $"Completed with errors — {DateTime.Now:HH:mm:ss}.";
+            ? $"Done — {DateTime.Now:HH:mm:ss}.{skippedNote}"
+            : $"Completed with errors — {DateTime.Now:HH:mm:ss}.{skippedNote}";
 
         int recycled = result.Targets.Sum(t => t.FilesRecycled);
         _tray.ShowBalloonTip(5000, "Folder Sync",

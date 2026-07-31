@@ -11,6 +11,64 @@ public class RobocopyOutputTests
 {
     private const string Dst = @"C:\dest\Docs";
 
+    // Captured verbatim from robocopy on Windows 11. Note the tabs, the padded class names, and that
+    // an extra directory is listed alongside every file inside it.
+    private const string ExtraDirLine = "\t*EXTRA Dir        -1\tC:\\dest\\Docs\\extradir\\";
+    private const string ExtraFileLine = "\t  *EXTRA File \t\t     17\tC:\\dest\\Docs\\extradir\\a.txt";
+    private const string NewerLine = "\t    Newer     \t\t      16\tC:\\src\\Docs\\shared.txt";
+    private const string NewFileLine = "\t    New File  \t\t       8\tC:\\src\\Docs\\brandnew.txt";
+
+    [Fact]
+    public void An_extra_directory_is_told_apart_from_an_extra_file()
+    {
+        // The deletion guard counts files only. robocopy lists the folder *and* its contents, so
+        // counting every *EXTRA line would double-count and make the guard trip too easily.
+        Assert.True(RobocopyOutput.IsExtraFile(ExtraFileLine));
+        Assert.False(RobocopyOutput.IsExtraFile(ExtraDirLine));
+
+        // Both are still things to move aside, so both must parse as paths.
+        Assert.True(RobocopyOutput.TryParseExtraPath(ExtraDirLine, Dst, out string dir));
+        Assert.Equal(@"C:\dest\Docs\extradir", dir);          // trailing slash removed
+        Assert.True(RobocopyOutput.TryParseExtraPath(ExtraFileLine, Dst, out string file));
+        Assert.Equal(@"C:\dest\Docs\extradir\a.txt", file);
+    }
+
+    [Fact]
+    public void Only_a_file_that_already_exists_at_the_destination_counts_as_an_overwrite()
+    {
+        const string src = @"C:\src\Docs";
+
+        // "Newer": the destination holds an older copy, which is about to be replaced and lost.
+        Assert.True(RobocopyOutput.TryParseOverwrittenSourcePath(NewerLine, src, out string path));
+        Assert.Equal(@"C:\src\Docs\shared.txt", path);
+
+        // "New File": nothing there to overwrite, so backing it up would be meaningless.
+        Assert.False(RobocopyOutput.TryParseOverwrittenSourcePath(NewFileLine, src, out _));
+
+        // An extra belongs to the destination and is a deletion, not an overwrite.
+        Assert.False(RobocopyOutput.TryParseOverwrittenSourcePath(ExtraFileLine, src, out _));
+    }
+
+    [Fact]
+    public void A_path_is_found_even_when_the_size_column_uses_two_tokens()
+    {
+        // robocopy prints large sizes as "1.7 m", which is why the path is located by searching for
+        // the root rather than by splitting on whitespace.
+        const string line = "\t    Newer     \t\t     1.7 m\tC:\\src\\Docs\\big.iso";
+
+        Assert.True(RobocopyOutput.TryParseOverwrittenSourcePath(line, @"C:\src\Docs", out string path));
+        Assert.Equal(@"C:\src\Docs\big.iso", path);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\t    Newer     \t\t      16\tC:\\somewhere\\else\\shared.txt")]   // different root
+    public void A_line_that_is_not_an_overwrite_here_is_rejected(string line)
+    {
+        Assert.False(RobocopyOutput.TryParseOverwrittenSourcePath(line, @"C:\src\Docs", out _));
+    }
+
     [Fact]
     public void FilesSummary_reads_copied_and_failed_columns()
     {

@@ -22,7 +22,9 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 | **Finds your cloud storage** | Google Drive, OneDrive, iCloud, Dropbox and anything else that syncs into a folder are detected automatically and offered as a destination — no sign-in, no API keys, nothing to configure. |
 | **Three sync types** | Left → Right, Right → Left, or Two-way (both folders merged, newer file wins). |
 | **Mirror or additive** | A one-directional pair can mirror (an exact copy, deletions carry over) or stay additive — mirror to the cloud while a backup drive keeps everything. |
-| **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. |
+| **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. Two-way pairs also keep the copy that a newer version replaced. |
+| **Large-deletion guard** | If a mirror is about to remove an unexpectedly large share of the receiving side — the signature of a source folder that is wrong or not yet available — it stops untouched and says so. |
+| **Per-pair status** | Each pair shows its last result and how long ago, so one that has been quietly failing is obvious at a glance. |
 | **Preview (dry run)** | See exactly what *would* be copied or deleted before committing to it. |
 | **Scheduling** | Daily, monthly, and **at sign-in / every screen unlock** — no admin rights needed. |
 | **Email notifications** | Optional summary email after each scheduled sync, with the log attached. |
@@ -100,6 +102,32 @@ start Additive, so nothing can be lost until you opt in.
 > a two-way pair only ever copies: delete something on one side and the next sync restores it from
 > the other. If you need deletions to propagate, use a one-directional pair with Mirror.
 
+### The large-deletion guard
+
+Mirroring is the one genuinely destructive thing here, and it goes wrong in a specific way: if the
+sending folder is momentarily wrong — a drive letter that moved, a folder renamed, a cloud client
+that hasn't finished starting and is briefly showing an empty tree — a mirror faithfully removes
+everything at the other end.
+
+So before a mirror deletes anything, Folder Sync counts what would go. If that is more than
+`LargeDeletionPercent` (default **25%**) of the files on the receiving side *and* at least
+`LargeDeletionMinimumFiles` (default **25**) of them, the pair is **stopped untouched** — nothing
+deleted, nothing copied, nothing even moved to the recycle folder — and the reason is reported. Fix
+the sending folder and sync again.
+
+Both conditions have to be met, so clearing two files out of three doesn't block an ordinary sync of a
+small folder. Set `"GuardLargeDeletions": false` to switch it off.
+
+### Two-way conflicts
+
+When the same file has changed on both sides of a two-way pair, the newer copy wins — and the copy it
+replaces is **kept in the recycle folder** rather than being overwritten and lost. The log says how
+many files this happened to.
+
+Note the honest limitation: without a record of the previous run, a genuine conflict cannot be told
+apart from an ordinary update, so *every* replaced file is kept. Set
+`"BackupOverwrittenFiles": false` if you would rather it didn't.
+
 ### Upgrading from an earlier version
 
 An older config with a single **Source** and a list of **Destinations** is migrated automatically
@@ -109,7 +137,8 @@ unchanged. The old fields are then cleared.
 ### Recycled files
 
 Because mirroring propagates deletions, anything a mirror is about to delete is **moved aside**
-first rather than deleted:
+first rather than deleted — as is any file a two-way pair is about to overwrite with a newer copy
+from the other side:
 
 ```
 <destination>\_FolderSyncTrash\<yyyyMMdd-HHmmss>\<original relative path>
@@ -216,6 +245,10 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 | `RecycleDeletedFiles` | `true` | Move would-be-deleted files aside instead of deleting. |
 | `RecycleRetentionDays` | `30` | How long to keep recycled batches. |
 | `RecycleFolderName` | `_FolderSyncTrash` | Recycle folder name inside each destination. |
+| `GuardLargeDeletions` | `true` | Stop a mirror that would delete an unexpectedly large share of the receiving side. |
+| `LargeDeletionPercent` | `25` | Share of the receiving side that, once exceeded, is treated as suspicious. |
+| `LargeDeletionMinimumFiles` | `25` | Never treat fewer files than this as suspicious, whatever the percentage. |
+| `BackupOverwrittenFiles` | `true` | In a two-way pair, keep the copy that a newer version replaced. |
 | `ExcludeFiles` | `~$*`, `Thumbs.db`, `desktop.ini`, `.DS_Store` | File patterns to skip (robocopy `/XF`). |
 | `ExcludeFolders` | `[]` | Folders to skip (robocopy `/XD`). |
 | `MinMinutesBetweenAutoSyncs` | `15` | Throttle for logon/unlock runs. |
@@ -320,6 +353,20 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
 ---
 
 ## Version history
+
+### 1.1.2
+
+- **Large-deletion guard.** A mirror that would remove an unexpectedly large share of the receiving
+  side now stops untouched and explains why, instead of going ahead. This is the one genuinely
+  destructive operation in the app, and the usual cause is a sending folder that is wrong or not
+  fully available yet.
+- **Two-way pairs keep the copy they replace.** Previously "newer wins" destroyed the older version
+  with no way back. It is now kept in the recycle folder, and the log reports how many files were
+  affected.
+- **An unplugged drive is "skipped", not "failed".** A scheduled sync no longer reports an error —
+  and no longer emails one — just because a USB or network backup drive isn't connected.
+- **Per-pair status.** The pairs list shows each pair's last result and how long ago, so a pair that
+  has been quietly failing for a week is visible immediately.
 
 ### 1.1.1
 

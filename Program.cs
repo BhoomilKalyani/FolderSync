@@ -142,6 +142,7 @@ internal static class Program
 
         try { File.WriteAllText(logPath, sb.ToString()); } catch { }
         LastRun.Save(result);                         // so the window can show a summary
+        PairHistory.Record(result);                   // so the grid shows each pair's last outcome
         SyncConfig.RecordSyncTime();                  // feeds the --auto minimum-gap throttle
         SyncConfig.CleanupOldLogs(7);                 // prune logs older than 7 days
         TrySendEmail(config, result, logPath);
