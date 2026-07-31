@@ -52,81 +52,96 @@ public sealed class SyncEngine
 
         Emit($"===== {verb} started {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
         if (listOnly) Emit("(PREVIEW — no files will be copied or deleted)");
-        Emit($"Source : {_config.Source}");
-        Emit($"Mode   : {(_config.Mirror ? "MIRROR (exact copy, deletes extras)" : "ADDITIVE (copy/update only)")}");
 
-        if (!Directory.Exists(_config.Source))
+        var pairs = _config.ActivePairs.ToList();
+        Emit($"Pairs  : {pairs.Count} enabled");
+
+        if (pairs.Count == 0)
         {
-            Emit($"ERROR: Source folder does not exist: {_config.Source}");
-            result.Success = false;
+            Emit("Nothing to do: no folder pair is enabled.");
             return result;
         }
 
-        var enabled = _config.Targets.Where(t => t.Enabled).ToList();
-        for (int i = 0; i < enabled.Count; i++)
+        for (int i = 0; i < pairs.Count; i++)
         {
             ct.ThrowIfCancellationRequested();
-            var target = enabled[i];
-            bool mirror = target.MirrorEffective(_config.Mirror);
-            Progress?.Invoke($"{(listOnly ? "Previewing" : "Syncing")} {i + 1} of {enabled.Count}: {target.Name}…");
+            var pair = pairs[i];
+            Progress?.Invoke($"{(listOnly ? "Previewing" : "Syncing")} {i + 1} of {pairs.Count}: {pair.DisplayName}…");
 
             Emit("");
-            Emit($"--- {target.Name}  ->  {target.Destination}   [{(mirror ? "mirror" : "additive")}]");
+            Emit($"--- {pair.DisplayName}   [{pair.DirectionText} · {pair.ModeText}]");
+            Emit($"    left : {pair.Left}");
+            Emit($"    right: {pair.Right}");
 
-            // Safety: never let a (mirror) sync target the source itself or a folder nested
-            // with it — that could delete data or loop endlessly.
-            if (PathUtil.SameOrNested(_config.Source, target.Destination))
+            var outcome = new TargetResult
             {
-                Emit("ERROR: destination is the source folder or nested inside/around it — skipped.");
-                result.Targets.Add(new TargetResult { Name = target.Name, Destination = target.Destination, Success = false, Summary = "unsafe path", Note = "unsafe path (same as / nested with source)" });
+                Name = pair.DisplayName,
+                Destination = pair.Direction == SyncDirection.ToLeft ? pair.Left : pair.Right,
+            };
+
+            string? problem = CheckPair(pair, listOnly);
+            if (problem is not null)
+            {
+                Emit($"    SKIPPED: {problem}");
+                outcome.Success = false;
+                outcome.Summary = problem;
+                outcome.Note = problem;
+                result.Targets.Add(outcome);
                 result.Success = false;
                 continue;
             }
 
-            // Don't fail mid-run on an unmounted drive (e.g. Google Drive 'G:' not running).
-            if (!PathUtil.DriveAvailable(target.Destination))
+            foreach (var pass in pair.Passes())
             {
-                Emit("WARNING: destination drive is not available — skipped.");
-                result.Targets.Add(new TargetResult { Name = target.Name, Destination = target.Destination, Success = false, Summary = "drive not available", Note = "destination drive not available" });
-                result.Success = false;
-                continue;
+                ct.ThrowIfCancellationRequested();
+                if (pair.Direction == SyncDirection.TwoWay)
+                    Emit($"    pass: {Path.GetFileName(pass.From.TrimEnd(Path.DirectorySeparatorChar))} → {Path.GetFileName(pass.To.TrimEnd(Path.DirectorySeparatorChar))}");
+
+                // Mirror safety net: move whatever the purge would delete aside first.
+                if (!listOnly && pass.Mirror && _config.RecycleDeletedFiles)
+                    outcome.FilesRecycled += await RecycleExtrasAsync(pass.From, pass.To, pass.Mirror, ct);
+
+                var tr = await RunRobocopyAsync(pass, ct, listOnly);
+                outcome.FilesCopied += tr.FilesCopied;
+                outcome.FilesFailed += tr.FilesFailed;
+                outcome.ExitCode = Math.Max(outcome.ExitCode, tr.ExitCode);
+                outcome.Summary = tr.Summary;
+                if (!tr.Success) outcome.Success = false;
+
+                if (!listOnly && pass.Mirror && _config.RecycleDeletedFiles)
+                    PruneRecycleFolder(pass.To);
             }
 
-            if (!listOnly)
-            {
-                try
-                {
-                    Directory.CreateDirectory(target.Destination);
-                }
-                catch (Exception ex)
-                {
-                    Emit($"ERROR: cannot create destination: {ex.Message}");
-                    result.Targets.Add(new TargetResult { Name = target.Name, Destination = target.Destination, Success = false, Summary = ex.Message, Note = ex.Message });
-                    result.Success = false;
-                    continue;
-                }
-            }
+            result.Targets.Add(outcome);
+            if (!outcome.Success) result.Success = false;
 
-            // Mirror safety net: move files that mirror would purge into a dated folder first.
-            int recycled = 0;
-            if (!listOnly && mirror && _config.RecycleDeletedFiles)
-                recycled = await RecycleExtrasAsync(_config.Source, target.Destination, mirror, ct);
-
-            var tr = await RunRobocopyAsync(_config.Source, target.Destination, ct, listOnly, mirror);
-            tr.Name = target.Name;
-            tr.FilesRecycled = recycled;
-            result.Targets.Add(tr);
-            if (!tr.Success) result.Success = false;
-
-            if (!listOnly && mirror && _config.RecycleDeletedFiles)
-                PruneRecycleFolder(target.Destination);
-
-            Emit($"--- {target.Name}: {(tr.Success ? "OK" : "FAILED")} (robocopy exit {tr.ExitCode}) {tr.Summary}");
+            Emit($"--- {pair.DisplayName}: {(outcome.Success ? "OK" : "FAILED")} "
+               + $"(copied {outcome.FilesCopied}, failed {outcome.FilesFailed}"
+               + (outcome.FilesRecycled > 0 ? $", recycled {outcome.FilesRecycled}" : "") + ")");
         }
 
         Emit("");
         Emit($"===== {verb} {(result.Success ? "completed" : "completed WITH ERRORS")} {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
         return result;
+    }
+
+    /// <summary>Returns why a pair cannot run, or null if it is good to go.</summary>
+    private string? CheckPair(SyncPair pair, bool listOnly)
+    {
+        // Same/nested folders would let a mirror delete its own source, or loop forever.
+        if (pair.Validate() is { } invalid) return invalid;
+
+        // The side being read from has to exist; the receiving side we can create.
+        foreach (var pass in pair.Passes())
+        {
+            if (!Directory.Exists(pass.From)) return $"folder does not exist: {pass.From}";
+            if (!PathUtil.DriveAvailable(pass.To)) return $"drive not available: {pass.To}";
+
+            if (listOnly) continue;
+            try { Directory.CreateDirectory(pass.To); }
+            catch (Exception ex) { return $"cannot create {pass.To}: {ex.Message}"; }
+        }
+        return null;
     }
 
     private string RecycleRoot(string dst) => Path.Combine(dst, _config.RecycleFolderName);
@@ -150,16 +165,21 @@ public sealed class SyncEngine
         return sb.ToString();
     }
 
-    private async Task<TargetResult> RunRobocopyAsync(string src, string dst, CancellationToken ct, bool listOnly, bool mirror)
+    private async Task<TargetResult> RunRobocopyAsync(SyncPass pass, CancellationToken ct, bool listOnly)
     {
+        string src = pass.From, dst = pass.To;
+
         // /MIR  = mirror (copy + purge extras) ; for additive we use /E (copy subdirs incl. empty)
         // /R:2 /W:2 = 2 retries, 2s wait      ; /MT:16 = 16 threads
         // /FFT  = relaxed (2s) timestamp compare, friendlier to cloud-sync drives
         // /XJ   = skip junctions (avoids loops) ; /NP = no per-file percent (cleaner log)
         // /NDL  = no dir listing                 ; /L = list only (preview, makes no changes)
-        string copyMode = mirror ? "/MIR" : "/E";
+        // /XO   = never overwrite a newer file at the destination. This is what makes a two-way
+        //         pair resolve to "newer file wins" when run once in each direction.
+        string copyMode = pass.Mirror ? "/MIR" : "/E";
         string listFlag = listOnly ? " /L" : "";
-        string args = $"\"{src}\" \"{dst}\" {copyMode} /R:2 /W:2 /MT:16 /FFT /XJ /NP /NDL{listFlag}{BuildExclusionArgs(dst)}";
+        string skipOlder = pass.SkipOlder ? " /XO" : "";
+        string args = $"\"{src}\" \"{dst}\" {copyMode} /R:2 /W:2 /MT:16 /FFT /XJ /NP /NDL{listFlag}{skipOlder}{BuildExclusionArgs(dst)}";
 
         var tr = new TargetResult { Destination = dst };
         var summary = new StringBuilder();

@@ -11,7 +11,7 @@ namespace FolderSync;
 public partial class MainWindow : Window
 {
     private readonly SyncConfig _config;
-    private readonly ObservableCollection<SyncTarget> _targets;
+    private readonly ObservableCollection<SyncPair> _pairs;
     private readonly WinForms.NotifyIcon _tray;
     private readonly object _logLock = new();
     private bool _loaded;
@@ -47,8 +47,8 @@ public partial class MainWindow : Window
         InitializeComponent();
 
         _config = SyncConfig.Load();
-        _targets = new ObservableCollection<SyncTarget>(_config.Targets);
-        _targets.CollectionChanged += (_, _) => { SyncTargetsToConfig(); SaveConfig(); UpdateRecycleNote(); };
+        _pairs = new ObservableCollection<SyncPair>(_config.Pairs);
+        _pairs.CollectionChanged += (_, _) => { SyncPairsToConfig(); SaveConfig(); UpdateRecycleNote(); };
 
         Icon = AppResources.WindowIcon;
         SourceInitialized += (_, _) => ThemeManager.ApplyWindowChrome(this);
@@ -58,7 +58,7 @@ public partial class MainWindow : Window
         CopyrightText.Text = $"Copyright © {DateTime.Now.Year} {DeveloperName}. All rights reserved.";
         AboutPaths.Text = $"Settings:  {SyncConfig.ConfigPath}\nLogs:      {SyncConfig.LogDir}\nProgram:   {ScheduleManager.ExePath}";
 
-        DestGrid.ItemsSource = _targets;
+        PairGrid.ItemsSource = _pairs;
         LoadConfigIntoUi();
         BuildScheduleRows();
         LoadScheduleTimesFromTasks();
@@ -83,7 +83,6 @@ public partial class MainWindow : Window
 
     private void LoadConfigIntoUi()
     {
-        SourceBox.Text = _config.Source;
         SkipFilesBox.Text = string.Join("; ", _config.ExcludeFiles);
         SkipFoldersBox.Text = string.Join("; ", _config.ExcludeFolders);
         UpdateRecycleNote();
@@ -105,28 +104,28 @@ public partial class MainWindow : Window
 
     private void UpdateRecycleNote()
     {
-        bool anyMirror = _targets.Any(t => t.Enabled && t.MirrorEffective(_config.Mirror));
-        RecycleNote.Text = !anyMirror
-            ? "No destination mirrors right now, so nothing will be deleted."
+        var deleting = _pairs.Where(p => p.Enabled && p.DeletesExtras).ToList();
+        RecycleNote.Text = deleting.Count == 0
+            ? "No enabled pair deletes anything right now."
             : _config.RecycleDeletedFiles
-                ? $"For mirrored destinations, deleted files are kept for {_config.RecycleRetentionDays} days in “{_config.RecycleFolderName}” — see Recycled files."
-                : "For mirrored destinations, deletions are permanent (recycle is turned off in config.json).";
+                ? $"{deleting.Count} pair(s) mirror, so deletions carry over — removed files are kept "
+                  + $"for {_config.RecycleRetentionDays} days in “{_config.RecycleFolderName}” (see Recycled files)."
+                : $"{deleting.Count} pair(s) mirror and deletions are PERMANENT (recycle is off in config.json).";
     }
 
-    private void SyncTargetsToConfig()
+    private void SyncPairsToConfig()
     {
-        _config.Targets.Clear();
-        _config.Targets.AddRange(_targets);
+        _config.Pairs.Clear();
+        _config.Pairs.AddRange(_pairs);
     }
 
     private void SaveConfig()
     {
         if (!_loaded) return;
 
-        _config.Source = SourceBox.Text.Trim();
         _config.ExcludeFiles = SplitList(SkipFilesBox.Text);
         _config.ExcludeFolders = SplitList(SkipFoldersBox.Text);
-        SyncTargetsToConfig();
+        SyncPairsToConfig();
 
         try { _config.Save(); }
         catch (Exception ex) { AppendEvent("[Config] save failed: " + ex.Message); }
@@ -136,22 +135,9 @@ public partial class MainWindow : Window
         .Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .ToList();
 
-    private void SourceBox_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
     private void Skip_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
 
-    /// <summary>
-    /// A destination's Mirror tick changed. The Mode column updates itself because SyncTarget
-    /// raises a change notification — calling DataGrid.Items.Refresh() here used to crash the app,
-    /// because a refresh is illegal while the grid is in an edit transaction.
-    /// </summary>
-    private void ModeCheck_Click(object sender, RoutedEventArgs e)
-    {
-        if (!_loaded) return;
-        SaveConfig();
-        UpdateRecycleNote();
-    }
-
-    /// <summary>A destination was switched on or off.</summary>
+    /// <summary>A pair was switched on or off.</summary>
     private void EnabledCheck_Click(object sender, RoutedEventArgs e)
     {
         if (!_loaded) return;
@@ -182,65 +168,63 @@ public partial class MainWindow : Window
         ThemeToggle.Content = ThemeManager.IsDark ? "Switch to light mode" : "Switch to dark mode";
     }
 
-    // ===================== Source / destinations =====================
+    // ===================== Folder pairs =====================
 
-    private void BrowseSource_Click(object sender, RoutedEventArgs e)
+    private void AddPair_Click(object sender, RoutedEventArgs e)
     {
-        var picked = PickFolder("Select the folder to sync from", SourceBox.Text);
-        if (picked is null) return;
-        SourceBox.Text = picked;
+        // Additive by default: a new pair cannot delete anything until Mirror is ticked.
+        var pair = new SyncPair { Direction = SyncDirection.ToRight, Mirror = false, Enabled = true };
+        var dlg = new PairWindow(pair, isNew: true) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+
+        if (_pairs.Any(p => SamePair(p, pair)))
+        {
+            MessageWindow.Info(this, "Already added", "A pair with those two folders already exists.");
+            return;
+        }
+        _pairs.Add(pair);
+        PairGrid.SelectedItem = pair;
+    }
+
+    private void EditPair_Click(object sender, RoutedEventArgs e) => EditSelectedPair();
+
+    private void PairGrid_MouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e) =>
+        EditSelectedPair();
+
+    private void EditSelectedPair()
+    {
+        if (PairGrid.SelectedItem is not SyncPair pair)
+        {
+            MessageWindow.Info(this, "No pair selected", "Select a pair in the list first.");
+            return;
+        }
+
+        var dlg = new PairWindow(pair, isNew: false) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+
+        // The pair object edits in place and raises change notifications, so the grid follows.
         SaveConfig();
+        UpdateRecycleNote();
     }
 
-    private void AddDestination_Click(object sender, RoutedEventArgs e)
+    private void RemovePair_Click(object sender, RoutedEventArgs e)
     {
-        var picked = PickFolder("Select a folder to sync to", null);
-        if (picked is null) return;
-
-        if (_targets.Any(t => string.Equals(t.Destination, picked, StringComparison.OrdinalIgnoreCase)))
+        if (PairGrid.SelectedItem is not SyncPair pair)
         {
-            MessageWindow.Info(this, "Already added", "That folder is already one of your destinations.");
+            MessageWindow.Info(this, "No pair selected", "Select a pair in the list first.");
             return;
         }
 
-        if (PathUtil.SameOrNested(_config.Source, picked))
-        {
-            MessageWindow.Warn(this, "Unsafe destination",
-                "That folder is the source — or nested inside or around it.\n\n"
-                + "Syncing there in Mirror mode could delete your files, so please pick a different folder.");
-            return;
-        }
-
-        // Additive by default: a brand-new destination can never lose files until you opt into Mirror.
-        _targets.Add(new SyncTarget
-        {
-            Name = new DirectoryInfo(picked).Name,
-            Destination = picked,
-            Enabled = true,
-            Mirror = false,
-        });
-    }
-
-    private void RemoveDestination_Click(object sender, RoutedEventArgs e)
-    {
-        if (DestGrid.SelectedItem is not SyncTarget target) return;
-
-        if (MessageWindow.Confirm(this, "Remove destination",
-                $"Stop syncing to:\n\n{target.Name}\n{target.Destination}\n\nThe folder's own files are not deleted.",
+        if (MessageWindow.Confirm(this, "Remove pair",
+                $"Stop syncing this pair?\n\n{pair.DisplayName}\n{pair.Left}\n{pair.Right}\n\n"
+                + "Neither folder's files are deleted.",
                 primary: "Remove"))
-            _targets.Remove(target);
+            _pairs.Remove(pair);
     }
 
-    private static string? PickFolder(string description, string? startAt)
-    {
-        using var dlg = new WinForms.FolderBrowserDialog
-        {
-            Description = description,
-            UseDescriptionForTitle = true,
-        };
-        if (!string.IsNullOrWhiteSpace(startAt) && Directory.Exists(startAt)) dlg.SelectedPath = startAt;
-        return dlg.ShowDialog() == WinForms.DialogResult.OK ? dlg.SelectedPath : null;
-    }
+    private static bool SamePair(SyncPair a, SyncPair b) =>
+        string.Equals(a.Left, b.Left, StringComparison.OrdinalIgnoreCase)
+        && string.Equals(a.Right, b.Right, StringComparison.OrdinalIgnoreCase);
 
     private void EmailDeveloper_Click(object sender, RoutedEventArgs e) =>
         OpenPath($"mailto:{DeveloperEmail}?subject=Folder%20Sync%20{Updater.CurrentVersion}");
@@ -275,35 +259,43 @@ public partial class MainWindow : Window
     {
         if (_cts is not null) return;   // already running
 
-        DestGrid.CommitEdit(DataGridEditingUnit.Row, true);
         SaveConfig();
 
-        if (string.IsNullOrWhiteSpace(_config.Source) || !Directory.Exists(_config.Source))
+        var active = _config.ActivePairs.ToList();
+        if (active.Count == 0)
         {
-            MessageWindow.Warn(this, "Source folder not found",
-                $"This folder does not exist:\n\n{(string.IsNullOrWhiteSpace(_config.Source) ? "(no folder set)" : _config.Source)}\n\n"
-                + "Please correct the source folder and try again.");
-            StatusText.Text = "Source folder not found.";
-            SourceBox.Focus();
-            SourceBox.SelectAll();
+            MessageWindow.Warn(this, "Nothing to sync",
+                "No folder pair is enabled, so there is nothing to do.\n\n"
+                + "Use “Add pair…” to set up two folders, then try again.");
+            StatusText.Text = "Add at least one folder pair.";
             return;
         }
 
-        if (!_config.Targets.Any(t => t.Enabled))
+        // Pairs whose folders are missing or overlapping would be skipped by the engine anyway;
+        // saying so up front is friendlier than finding out in the log.
+        var broken = active.Where(p => p.Validate() is not null
+                                    || !Directory.Exists(p.Left)
+                                    || (p.Direction != SyncDirection.ToRight && !Directory.Exists(p.Right)))
+                           .ToList();
+        if (broken.Count > 0)
         {
-            MessageWindow.Warn(this, "No destinations",
-                "No destinations are enabled, so there is nothing to sync to.\n\n"
-                + "Use “Add destination…” to choose a folder, then try again.");
-            StatusText.Text = "Add at least one destination.";
-            return;
+            string list = string.Join("\n", broken.Select(p =>
+                $"  • {p.DisplayName} — {p.Validate() ?? "a folder is missing"}"));
+            if (!MessageWindow.Confirm(this, "Some pairs cannot run",
+                    $"These pairs will be skipped:\n\n{list}\n\nContinue with the rest?",
+                    primary: "Sync anyway", tone: DialogTone.Warning))
+            {
+                StatusText.Text = "Cancelled.";
+                return;
+            }
         }
 
-        var offline = _config.Targets.Where(t => t.Enabled && !PathUtil.DriveAvailable(t.Destination)).ToList();
+        var offline = active.Where(p => !PathUtil.DriveAvailable(p.Left) || !PathUtil.DriveAvailable(p.Right)).ToList();
         if (offline.Count > 0)
         {
-            string list = string.Join("\n", offline.Select(t => $"  • {t.Name} — {t.Destination}"));
-            if (!MessageWindow.Confirm(this, "Destination not available",
-                    $"These destinations cannot be reached and will be skipped:\n\n{list}\n\n"
+            string list = string.Join("\n", offline.Select(p => $"  • {p.DisplayName}"));
+            if (!MessageWindow.Confirm(this, "Folder not available",
+                    $"These pairs use a drive that cannot be reached and will be skipped:\n\n{list}\n\n"
                     + "Is the cloud client running, or the drive plugged in?",
                     primary: "Sync anyway", tone: DialogTone.Warning))
             {
@@ -404,7 +396,6 @@ public partial class MainWindow : Window
 
     private void Health_Click(object sender, RoutedEventArgs e)
     {
-        DestGrid.CommitEdit(DataGridEditingUnit.Row, true);
         SaveConfig();
         string report;
         try { report = Diagnostics.Run(_config); }
@@ -796,22 +787,23 @@ public partial class MainWindow : Window
     {
         if (BatchGrid.SelectedItem is not RecycleBatch batch) return;
 
-        if (string.IsNullOrWhiteSpace(_config.Source) || !Directory.Exists(_config.Source))
+        string restoreTo = batch.RestoreTo;
+        if (string.IsNullOrWhiteSpace(restoreTo) || !Directory.Exists(restoreTo))
         {
             MessageWindow.Warn(this, "Cannot restore",
-                "The source folder is not set or doesn't exist, so there is nowhere to restore to.");
+                $"The folder these files came from is missing, so there is nowhere to restore to:\n\n{restoreTo}");
             return;
         }
 
         // Explicit button labels beat Yes/No here: "No" meaning "overwrite" would be a trap.
         var choice = MessageWindow.Choose(this, "Restore files",
-            $"Restore {files.Count} file(s) into the source folder?\n\n{_config.Source}\n\n"
-            + "The next sync will copy them out to every destination again.",
+            $"Restore {files.Count} file(s) into:\n\n{restoreTo}\n\n"
+            + "The next sync will copy them back across the pair.",
             primary: "Skip existing", secondary: "Overwrite existing");
         if (choice == DialogChoice.Cancel) return;
 
         bool overwrite = choice == DialogChoice.Secondary;
-        var result = RecycleStore.Restore(batch.Path, files, _config.Source, overwrite);
+        var result = RecycleStore.Restore(batch.Path, files, restoreTo, overwrite);
 
         RestoreStatus.Text = $"Restored {result.Restored}, skipped {result.Skipped}"
                            + (result.Errors.Count > 0 ? $", {result.Errors.Count} error(s)." : ".");

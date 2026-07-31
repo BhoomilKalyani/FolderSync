@@ -56,80 +56,48 @@
                 <StackPanel x:Name="PageSync">
                     <TextBlock Text="Sync" Style="{StaticResource H1}"/>
                     <TextBlock Style="{StaticResource Subtle}" Margin="0,0,0,18"
-                               Text="Copy one folder into every destination below."/>
+                               Text="Each folder pair keeps two folders in step. Add as many pairs as you need."/>
 
-                    <!-- Source -->
+                    <!-- Folder pairs -->
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
-                            <TextBlock Text="Source folder" Style="{StaticResource CardTitle}"/>
-                            <Grid>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="*"/>
-                                    <ColumnDefinition Width="Auto"/>
-                                </Grid.ColumnDefinitions>
-                                <TextBox x:Name="SourceBox" Grid.Column="0" LostFocus="SourceBox_LostFocus"/>
-                                <Button Grid.Column="1" Content="Browse…" Margin="8,0,0,0" Click="BrowseSource_Click"/>
-                            </Grid>
-                            <TextBlock Style="{StaticResource Subtle}" Margin="0,12,0,0"
-                                       Text="Each destination below chooses its own mode — Mirror for an exact copy, or Additive to only ever add and update."/>
-                            <TextBlock x:Name="RecycleNote" Style="{StaticResource Subtle}" Margin="0,6,0,0"/>
-                        </StackPanel>
-                    </Border>
-
-                    <!-- Destinations -->
-                    <Border Style="{StaticResource Card}">
-                        <StackPanel>
-                            <TextBlock Text="Destinations" Style="{StaticResource CardTitle}"/>
-                            <!-- Virtualisation off: only a handful of destinations, and recycled
-                                 row containers are what let cell editors write stale values back. -->
-                            <DataGrid x:Name="DestGrid" MinHeight="120" MaxHeight="220"
+                            <TextBlock Text="Folder pairs" Style="{StaticResource CardTitle}"/>
+                            <!-- Virtualisation off: only a handful of pairs, and recycled row
+                                 containers are what let cell editors write stale values back. -->
+                            <DataGrid x:Name="PairGrid" MinHeight="130" MaxHeight="260"
                                       CanUserAddRows="False" CanUserDeleteRows="False"
                                       EnableRowVirtualization="False" EnableColumnVirtualization="False"
-                                      CellEditEnding="DestGrid_CellEditEnding">
+                                      IsReadOnly="True"
+                                      MouseDoubleClick="PairGrid_MouseDoubleClick">
                                 <DataGrid.Columns>
-                                    <!-- Fixed columns first, star column last: that way the Mode
-                                         picker stays visible even if the grid has to scroll.
-                                         Both tick boxes are template columns using the app's own
-                                         CheckBox style, so they look the same and respond to a
-                                         single click (a DataGridCheckBoxColumn needs edit mode). -->
+                                    <!-- Only "On" is editable in the grid; everything else is set
+                                         in the pair dialog, so there is no cell-editor to misfire. -->
                                     <DataGridTemplateColumn Header="On" Width="46" SortMemberPath="Enabled">
                                         <DataGridTemplateColumn.CellTemplate>
                                             <DataTemplate>
                                                 <CheckBox HorizontalAlignment="Center"
                                                           IsChecked="{Binding Enabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
                                                           Click="EnabledCheck_Click"
-                                                          ToolTip="Include this destination when syncing."/>
+                                                          ToolTip="Include this pair when syncing."/>
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="150"/>
-                                    <!-- A checkbox, not a combo box, on purpose: a cell ComboBox
-                                         bound two-way resets to its first item whenever WPF
-                                         re-realises the row, writing that value back and silently
-                                         changing the saved mode. A checkbox has no item list, so
-                                         the value can only change when you click it. -->
-                                    <DataGridTemplateColumn Header="Mirror" Width="66" SortMemberPath="Mirror">
-                                        <DataGridTemplateColumn.CellTemplate>
-                                            <DataTemplate>
-                                                <CheckBox HorizontalAlignment="Center"
-                                                          IsThreeState="False"
-                                                          IsChecked="{Binding Mirror, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
-                                                          Click="ModeCheck_Click"
-                                                          ToolTip="Ticked = Mirror: an exact copy, so deletions carry over.&#10;Unticked = Additive: only adds and updates, never deletes."/>
-                                            </DataTemplate>
-                                        </DataGridTemplateColumn.CellTemplate>
-                                    </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText}" Width="80" IsReadOnly="True"/>
-                                    <DataGridTextColumn Header="Folder" Binding="{Binding Destination}" Width="*" MinWidth="180"/>
+                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="140"/>
+                                    <DataGridTextColumn Header="Sync type" Binding="{Binding DirectionText}" Width="110"/>
+                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText}" Width="150"/>
+                                    <DataGridTextColumn Header="Left folder" Binding="{Binding Left}" Width="*" MinWidth="150"/>
+                                    <DataGridTextColumn Header="Right folder" Binding="{Binding Right}" Width="*" MinWidth="150"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
-                                <Button Content="Add destination…" Click="AddDestination_Click"/>
-                                <Button Content="Remove selected" Click="RemoveDestination_Click"/>
+                                <Button Content="Add pair…" Style="{StaticResource PrimaryButton}" Click="AddPair_Click"/>
+                                <Button Content="Edit" Click="EditPair_Click"/>
+                                <Button Content="Remove" Click="RemovePair_Click"/>
                                 <Button Content="Open config file" Style="{StaticResource LinkButton}" Click="OpenConfig_Click"/>
                             </StackPanel>
-                            <TextBlock Style="{StaticResource Subtle}" Margin="0,10,0,0"
-                                       Text="Mirror keeps a destination identical to the source, so files you delete are deleted there too (recoverable from Recycled files). Additive never deletes — a good choice for a backup drive."/>
+                            <TextBlock x:Name="RecycleNote" Style="{StaticResource Subtle}" Margin="0,10,0,0"/>
+                            <TextBlock Style="{StaticResource Subtle}" Margin="0,6,0,0"
+                                       Text="Double-click a pair to edit it. Two-way merges both folders and never deletes; one-directional pairs can optionally mirror, which does delete."/>
                         </StackPanel>
                     </Border>
 

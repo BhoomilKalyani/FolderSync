@@ -18,8 +18,9 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 
 | | |
 |---|---|
-| **Many destinations** | Sync one source to as many folders as you like; enable/disable each one individually. |
-| **Per-destination mode** | Each destination is Mirror (an exact copy) or Additive (only adds and updates) — mirror to the cloud while a backup drive keeps everything. |
+| **Multiple folder pairs** | Set up as many independent pairs as you like; switch each on or off individually. |
+| **Three sync types** | Left → Right, Right → Left, or Two-way (both folders merged, newer file wins). |
+| **Mirror or additive** | A one-directional pair can mirror (an exact copy, deletions carry over) or stay additive — mirror to the cloud while a backup drive keeps everything. |
 | **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. |
 | **Preview (dry run)** | See exactly what *would* be copied or deleted before committing to it. |
 | **Scheduling** | Daily, monthly, and **at sign-in / every screen unlock** — no admin rights needed. |
@@ -58,8 +59,8 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 A fresh install starts empty — nothing is synced until you say so. The window has five pages in
 the sidebar: **Sync**, **Schedule**, **Notifications**, **Recycled files** and **About**.
 
-1. **Source** — click **Browse…** and pick the folder you want to copy *from*.
-2. **Destinations** — click **Add destination…** for each folder to copy *to*. Typical choices:
+1. Click **Add pair…** and choose the two folders, the **sync type**, and whether it mirrors.
+   Typical right-hand folders:
 
    | Target | Typical local folder |
    |---|---|
@@ -68,10 +69,10 @@ the sidebar: **Sync**, **Schedule**, **Notifications**, **Recycled files** and *
    | OneDrive | `%USERPROFILE%\OneDrive\…` |
    | External / backup drive | `D:\…` |
 
-   Each row has two tick boxes: **On** includes it in a sync, and **Mirror** chooses the mode
-   (see below). New destinations arrive unticked — Additive — so nothing can be deleted by accident.
+2. Repeat for as many pairs as you need — one source can feed several folders, and different pairs
+   can use different folders entirely.
 3. Click **Preview** to see what would happen, then **Sync now** to do it.
-4. Optionally open **Schedule** and enable the triggers you want.
+4. Optionally open **Schedule** and enable the triggers you want. All enabled pairs run together.
 
 > **About Google Drive:** use a folder under **`My Drive`**. The *"Other computers"* section is a
 > read-only view of backups from other machines and does not upload changes.
@@ -83,17 +84,36 @@ Everything you edit saves immediately — there is no Save button.
 
 ---
 
-## Sync modes
+## Folder pairs
 
-Each destination has its own **Mirror** tick box, so one source can feed a mirrored cloud folder and
-an add-only archive at the same time. The **Mode** column spells out the current choice.
+Everything is organised as **folder pairs** — two folders plus a rule for keeping them in step. Add
+as many as you like; they all run together when you sync. Double-click a pair to edit it.
 
-| Mode | Behaviour |
+### Sync type
+
+| Type | What happens |
 |---|---|
-| **Additive** — Mirror unticked (default for a new destination) | Only copies new and changed files. Never deletes anything. |
-| **Mirror** — ticked | Keeps the destination identical to the source, so files you delete are removed there too. |
+| **Left → Right** | Changes in the left folder are copied to the right. The left folder is never modified. |
+| **Right → Left** | The mirror image of the above. |
+| **Two-way** | Both folders receive whatever is newer on the other side, so each ends up holding everything. If the same file changed on both sides, the **newer one wins**. |
 
-New destinations start **Additive** deliberately: nothing can be lost until you opt in to mirroring.
+### Mirror
+
+For a one-directional pair you can additionally tick **Mirror**, which makes the receiving folder an
+exact copy — so files you delete from the source are removed there too (recoverable from
+**Recycled files**). Leave it unticked for **Additive**, which only ever adds and updates. New pairs
+start Additive, so nothing can be lost until you opt in.
+
+> **Two-way never deletes, by design.** Robocopy has no memory of the previous run, so a file that
+> vanished from one side is indistinguishable from a file just added to the other. Rather than guess,
+> a two-way pair only ever copies: delete something on one side and the next sync restores it from
+> the other. If you need deletions to propagate, use a one-directional pair with Mirror.
+
+### Upgrading from an earlier version
+
+An older config with a single **Source** and a list of **Destinations** is migrated automatically
+into one `Left → Right` pair per destination, each keeping its own mirror setting — so behaviour is
+unchanged. The old fields are then cleared.
 
 ### Recycled files
 
@@ -200,9 +220,8 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 | Key | Default | Meaning |
 |---|---|---|
-| `Source` | `""` | Folder to copy from. |
-| `Targets` | `[]` | Destinations: `Name`, `Destination`, `Enabled`, `Mirror` (`true` = mirror, `false` = additive). |
-| `Mirror` | `true` | Legacy global mode. Only used to fill in destinations saved before per-destination modes existed. |
+| `Pairs` | `[]` | Folder pairs: `Name`, `Left`, `Right`, `Direction` (`0` = Left→Right, `1` = Right→Left, `2` = Two-way), `Mirror`, `Enabled`. |
+| `Source`, `Targets`, `Mirror` | — | Legacy fields from the single-source model. Read once to migrate into `Pairs`, then cleared. |
 | `RecycleDeletedFiles` | `true` | Move would-be-deleted files aside instead of deleting. |
 | `RecycleRetentionDays` | `30` | How long to keep recycled batches. |
 | `RecycleFolderName` | `_FolderSyncTrash` | Recycle folder name inside each destination. |

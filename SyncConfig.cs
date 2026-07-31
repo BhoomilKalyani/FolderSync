@@ -131,7 +131,13 @@ public sealed class EmailSettings
 /// </summary>
 public sealed class SyncConfig
 {
+    /// <summary>The folder pairs to sync. This replaced the old single Source + Targets model.</summary>
+    public List<SyncPair> Pairs { get; set; } = new();
+
+    /// <summary>Legacy single source folder; only read when migrating an old config into Pairs.</summary>
     public string Source { get; set; } = "";
+
+    /// <summary>Legacy destination list; only read when migrating an old config into Pairs.</summary>
     public List<SyncTarget> Targets { get; set; } = new();
 
     /// <summary>
@@ -265,9 +271,11 @@ public sealed class SyncConfig
                     // own config and make an empty source impossible to save.)
                     cfg.Email ??= new EmailSettings();
                     cfg.Targets ??= new List<SyncTarget>();
+                    cfg.Pairs ??= new List<SyncPair>();
                     // Destinations saved before per-destination modes existed inherit the old
                     // global setting, so an existing mirror setup keeps mirroring.
                     foreach (var t in cfg.Targets) t.Mirror ??= cfg.Mirror;
+                    if (cfg.MigrateTargetsToPairs()) cfg.Save();
                     cfg.ExcludeFiles ??= new List<string>();
                     cfg.ExcludeFolders ??= new List<string>();
                     if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)
@@ -288,10 +296,42 @@ public sealed class SyncConfig
         return def;
     }
 
+    /// <summary>
+    /// Turns an old single-source config into folder pairs — one "left to right" pair per
+    /// destination, keeping each destination's mirror setting, so behaviour is unchanged.
+    /// Returns true when something was migrated (and the caller should save).
+    /// </summary>
+    public bool MigrateTargetsToPairs()
+    {
+        if (Pairs.Count > 0) return false;                       // already on the new model
+        if (Targets.Count == 0 || string.IsNullOrWhiteSpace(Source)) return false;
+
+        foreach (var t in Targets)
+        {
+            Pairs.Add(new SyncPair
+            {
+                Name = t.Name,
+                Left = Source,
+                Right = t.Destination,
+                Direction = SyncDirection.ToRight,
+                Mirror = t.MirrorEffective(Mirror),
+                Enabled = t.Enabled,
+            });
+        }
+
+        // Cleared so the old fields can't drift out of step with the pairs that replaced them.
+        Targets.Clear();
+        Source = "";
+        return true;
+    }
+
     /// <summary>True on a first run: nothing has been configured yet.</summary>
     [JsonIgnore]
-    public bool IsUnconfigured =>
-        string.IsNullOrWhiteSpace(Source) || Targets is null || Targets.Count == 0;
+    public bool IsUnconfigured => Pairs is null || Pairs.Count == 0;
+
+    /// <summary>The pairs that a sync will actually process.</summary>
+    [JsonIgnore]
+    public IEnumerable<SyncPair> ActivePairs => (Pairs ?? new List<SyncPair>()).Where(p => p.Enabled);
 
     public void Save()
     {

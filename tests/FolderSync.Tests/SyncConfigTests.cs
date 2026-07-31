@@ -142,19 +142,8 @@ public class SyncConfigTests
         Assert.Equal(0, count);
     }
 
-    [Fact]
-    public void IsUnconfigured_is_true_until_a_source_and_a_destination_exist()
-    {
-        Assert.True(new SyncConfig().IsUnconfigured);
-        Assert.True(new SyncConfig { Source = @"C:\data" }.IsUnconfigured);       // no destinations
-
-        var configured = new SyncConfig
-        {
-            Source = @"C:\data",
-            Targets = new List<SyncTarget> { new() { Destination = @"D:\data" } },
-        };
-        Assert.False(configured.IsUnconfigured);
-    }
+    // IsUnconfigured / ActivePairs now follow the folder-pair model and are covered by
+    // SyncPairTests.ActivePairs_and_IsUnconfigured_track_the_enabled_pairs.
 
     [Theory]
     [InlineData(EmailMode.Always, true, true)]

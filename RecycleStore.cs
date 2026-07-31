@@ -7,6 +7,9 @@ public sealed class RecycleBatch
 {
     public string DestinationName { get; init; } = "";
     public string DestinationPath { get; init; } = "";
+
+    /// <summary>Where a restore should put these files back — the other side of the pair.</summary>
+    public string RestoreTo { get; init; } = "";
     /// <summary>Full path of the batch folder, e.g. ...\_FolderSyncTrash\20260730-205223.</summary>
     public string Path { get; init; } = "";
     public DateTime When { get; init; }
@@ -54,14 +57,25 @@ public sealed class RestoreResult
 /// </summary>
 public static class RecycleStore
 {
-    /// <summary>Every recycled batch across all configured destinations, newest first.</summary>
+    /// <summary>
+    /// Every recycled batch across all pairs, newest first. Only the receiving side of a mirror can
+    /// have one, but both sides are checked so batches from an earlier configuration still show up.
+    /// </summary>
     public static List<RecycleBatch> GetBatches(SyncConfig config)
     {
         var batches = new List<RecycleBatch>();
 
-        foreach (var target in config.Targets)
+        var places = new List<(string name, string folder, string restoreTo)>();
+        foreach (var pair in config.Pairs ?? new List<SyncPair>())
         {
-            string root = Path.Combine(target.Destination, config.RecycleFolderName);
+            // Restoring puts files back on the opposite side, which is where they were deleted from.
+            places.Add(($"{pair.DisplayName} (right)", pair.Right, pair.Left));
+            places.Add(($"{pair.DisplayName} (left)", pair.Left, pair.Right));
+        }
+
+        foreach (var place in places)
+        {
+            string root = Path.Combine(place.folder, config.RecycleFolderName);
             if (!SafeDirectoryExists(root)) continue;
 
             IEnumerable<string> dirs;
@@ -84,8 +98,9 @@ public static class RecycleStore
 
                 batches.Add(new RecycleBatch
                 {
-                    DestinationName = target.Name,
-                    DestinationPath = target.Destination,
+                    DestinationName = place.name,
+                    DestinationPath = place.folder,
+                    RestoreTo = place.restoreTo,
                     Path = dir,
                     When = ParseBatchTimestamp(Path.GetFileName(dir)),
                     FileCount = count,

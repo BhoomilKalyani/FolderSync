@@ -17,8 +17,7 @@ public static class Diagnostics
         sb.AppendLine(new string('-', 78));
 
         CheckApp(sb);
-        CheckSource(sb, config);
-        CheckDestinations(sb, config);
+        CheckPairs(sb, config);
         CheckSchedules(sb);
         CheckLastRun(sb, config);
         CheckEmail(sb, config);
@@ -44,83 +43,54 @@ public static class Diagnostics
                             + "from here break when the project is rebuilt - run the installed copy instead.");
     }
 
-    private static void CheckSource(StringBuilder sb, SyncConfig config)
+    private static void CheckPairs(StringBuilder sb, SyncConfig config)
     {
         sb.AppendLine();
-        sb.AppendLine("SOURCE");
-        if (string.IsNullOrWhiteSpace(config.Source))
+        sb.AppendLine("FOLDER PAIRS");
+
+        var pairs = config.Pairs ?? new List<SyncPair>();
+        if (pairs.Count == 0)
         {
-            Line(sb, "FAIL", "No source folder is configured.");
+            Line(sb, "FAIL", "No folder pairs are configured - a sync would do nothing.");
             return;
         }
+        if (!pairs.Any(p => p.Enabled))
+            Line(sb, "FAIL", "Every pair is switched off - a sync would do nothing.");
 
-        if (!Directory.Exists(config.Source))
+        foreach (var p in pairs)
         {
-            Line(sb, "FAIL", $"Source folder does not exist: {config.Source}");
-            return;
-        }
+            string label = $"{p.DisplayName}  [{p.DirectionText} · {p.ModeText}]";
+            if (!p.Enabled) { Line(sb, "WARN", $"{label}  (disabled)"); continue; }
 
-        Line(sb, "OK", $"{config.Source}");
-        Line(sb, "OK", $"Mode: {(config.Mirror ? "Mirror (deletions propagate)" : "Additive (never deletes)")}"
-                     + (config.Mirror
-                        ? config.RecycleDeletedFiles
-                            ? $"; deleted files kept {config.RecycleRetentionDays} days in '{config.RecycleFolderName}'"
-                            : "; deletions are PERMANENT (recycle turned off)"
-                        : ""));
-
-        if (config.Mirror && !config.RecycleDeletedFiles)
-            Line(sb, "WARN", "Mirror without the recycle safety net - a file deleted from the source is "
-                            + "removed from every destination with no backup.");
-    }
-
-    private static void CheckDestinations(StringBuilder sb, SyncConfig config)
-    {
-        sb.AppendLine();
-        sb.AppendLine("DESTINATIONS");
-
-        var enabled = config.Targets.Where(t => t.Enabled).ToList();
-        if (enabled.Count == 0)
-        {
-            Line(sb, "FAIL", "No destinations are enabled - a sync would do nothing.");
-            return;
-        }
-
-        long sourceSize = TryGetFolderSize(config.Source);
-
-        foreach (var t in config.Targets)
-        {
-            string label = $"{t.Name} -> {t.Destination}";
-            if (!t.Enabled) { Line(sb, "WARN", $"{label}  (disabled)"); continue; }
-
-            if (string.IsNullOrWhiteSpace(t.Destination)) { Line(sb, "FAIL", $"{t.Name}: no path set."); continue; }
-            if (PathUtil.SameOrNested(config.Source, t.Destination))
+            if (p.Validate() is { } invalid)
             {
-                Line(sb, "FAIL", $"{label}  is the source or nested with it - would be skipped as unsafe.");
-                continue;
-            }
-            if (!PathUtil.DriveAvailable(t.Destination))
-            {
-                Line(sb, "FAIL", $"{label}  drive not available (is the cloud client running?).");
+                Line(sb, "FAIL", $"{label}  {invalid} - would be skipped.");
                 continue;
             }
 
-            Line(sb, "OK", label + (Directory.Exists(t.Destination) ? "" : "  (will be created)"));
+            Line(sb, "OK", label);
 
-            // Free space, when we can work out both numbers.
-            try
+            // Each side: reachable? exists? and how much room is left.
+            foreach (var (side, path) in new[] { ("left ", p.Left), ("right", p.Right) })
             {
-                string? root = Path.GetPathRoot(Path.GetFullPath(t.Destination));
-                if (root is not null && !root.StartsWith(@"\\"))
+                if (!PathUtil.DriveAvailable(path))
                 {
-                    var di = new DriveInfo(root);
-                    string free = FormatSize(di.AvailableFreeSpace);
-                    if (sourceSize > 0 && di.AvailableFreeSpace < sourceSize)
-                        Line(sb, "WARN", $"       free space {free} is less than the source ({FormatSize(sourceSize)}).");
-                    else
-                        Line(sb, "OK", $"       free space {free}.");
+                    Line(sb, "FAIL", $"       {side}: drive not available (is the cloud client running?) {path}");
+                    continue;
                 }
+                if (!Directory.Exists(path))
+                {
+                    // Only a problem when we need to read from it.
+                    bool reads = (side.Trim() == "left" && p.Direction != SyncDirection.ToLeft)
+                              || (side.Trim() == "right" && p.Direction != SyncDirection.ToRight);
+                    Line(sb, reads ? "FAIL" : "WARN", $"       {side}: does not exist{(reads ? "" : " (will be created)")} {path}");
+                    continue;
+                }
+                Line(sb, "OK", $"       {side}: {path}{FreeSpaceNote(path)}");
             }
-            catch { /* free space is informational only */ }
+
+            if (p.DeletesExtras && !config.RecycleDeletedFiles)
+                Line(sb, "WARN", "       mirrors with the recycle safety net turned off - deletions are permanent.");
         }
 
         var patterns = (config.ExcludeFiles ?? new()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
@@ -236,15 +206,16 @@ public static class Diagnostics
         }
     }
 
-    private static long TryGetFolderSize(string path)
+    /// <summary>" — 120 GB free" for a local drive, or empty when it can't be determined.</summary>
+    private static string FreeSpaceNote(string path)
     {
         try
         {
-            return new DirectoryInfo(path)
-                .EnumerateFiles("*", SearchOption.AllDirectories)
-                .Sum(f => { try { return f.Length; } catch { return 0L; } });
+            string? root = Path.GetPathRoot(Path.GetFullPath(path));
+            if (root is null || root.StartsWith(@"\\")) return "";
+            return $"   ({FormatSize(new DriveInfo(root).AvailableFreeSpace)} free)";
         }
-        catch { return 0; }
+        catch { return ""; }
     }
 
     private static string FormatSize(long bytes)

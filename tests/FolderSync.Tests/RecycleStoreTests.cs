@@ -54,16 +54,17 @@ public class RecycleStoreTests : IDisposable
     }
 
     [Fact]
-    public void GetBatches_finds_batches_across_destinations_newest_first()
+    public void GetBatches_finds_batches_across_pairs_newest_first()
     {
+        string source = Dir("source");
         var config = new SyncConfig
         {
             RecycleFolderName = "_Trash",
-            Targets = new List<SyncTarget>
+            Pairs = new List<SyncPair>
             {
-                new() { Name = "Cloud",  Destination = Dir("cloud") },
-                new() { Name = "Backup", Destination = Dir("backup") },
-                new() { Name = "Absent", Destination = Path.Combine(_root, "does-not-exist") },
+                new() { Name = "Cloud",  Left = source, Right = Dir("cloud"),  Direction = SyncDirection.ToRight, Mirror = true },
+                new() { Name = "Backup", Left = source, Right = Dir("backup"), Direction = SyncDirection.ToRight, Mirror = true },
+                new() { Name = "Absent", Left = source, Right = Path.Combine(_root, "does-not-exist") },
             },
         };
 
@@ -76,10 +77,32 @@ public class RecycleStoreTests : IDisposable
         var batches = RecycleStore.GetBatches(config);
 
         Assert.Equal(2, batches.Count);
-        Assert.Equal("Backup", batches[0].DestinationName);   // newest first
-        Assert.Equal("Cloud", batches[1].DestinationName);
-        Assert.Equal(2, batches[1].FileCount);                // counts nested files
-        Assert.Equal(5, batches[1].TotalBytes);               // "aaa" + "bb"
+        Assert.StartsWith("Backup", batches[0].DestinationName);   // newest first
+        Assert.StartsWith("Cloud", batches[1].DestinationName);
+        Assert.Equal(2, batches[1].FileCount);                     // counts nested files
+        Assert.Equal(5, batches[1].TotalBytes);                    // "aaa" + "bb"
+    }
+
+    [Fact]
+    public void A_batch_restores_to_the_other_side_of_its_pair()
+    {
+        // Files were purged from the right side because they had gone from the left, so putting
+        // them back means writing to the left.
+        string source = Dir("source");
+        var config = new SyncConfig
+        {
+            RecycleFolderName = "_Trash",
+            Pairs = new List<SyncPair>
+            {
+                new() { Name = "Cloud", Left = source, Right = Dir("cloud"), Direction = SyncDirection.ToRight, Mirror = true },
+            },
+        };
+        Dir("cloud", "_Trash", "20260101-100000");
+        File_(@"cloud\_Trash\20260101-100000\a.txt", "aaa");
+
+        var batch = Assert.Single(RecycleStore.GetBatches(config));
+
+        Assert.Equal(source, batch.RestoreTo);
     }
 
     [Fact]
@@ -88,7 +111,7 @@ public class RecycleStoreTests : IDisposable
         var config = new SyncConfig
         {
             RecycleFolderName = "_Trash",
-            Targets = new List<SyncTarget> { new() { Name = "Cloud", Destination = Dir("cloud") } },
+            Pairs = new List<SyncPair> { new() { Name = "Cloud", Left = Dir("source"), Right = Dir("cloud") } },
         };
 
         Assert.Empty(RecycleStore.GetBatches(config));
