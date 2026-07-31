@@ -43,8 +43,10 @@ public static class ThemeManager
             _ => SystemPrefersDark(),
         };
 
-        var r = Application.Current?.Resources;
-        if (r is null) return;
+        // Nothing to restyle before the Application exists (or in a headless/CLI run).
+        var app = Application.Current;
+        if (app is null) return;
+        var r = app.Resources;
 
         if (IsDark)
         {
@@ -84,7 +86,7 @@ public static class ThemeManager
             Set(r, "Warn", "#9D5D00");
         }
 
-        foreach (Window w in Application.Current.Windows) ApplyWindowChrome(w);
+        foreach (Window w in app.Windows) ApplyWindowChrome(w);
     }
 
     private static void Set(ResourceDictionary r, string key, string hex)

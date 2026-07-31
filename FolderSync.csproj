@@ -4,6 +4,9 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
+    <!-- Nullability mistakes become build errors: a "possible null dereference" here is a real
+         crash waiting to happen, and warnings are easy to scroll past. -->
+    <WarningsAsErrors>nullable</WarningsAsErrors>
     <ImplicitUsings>enable</ImplicitUsings>
     <!-- WPF provides the UI. WinForms stays enabled for the tray icon (NotifyIcon) and the
          folder browser dialog, which have no first-class WPF equivalent. -->
