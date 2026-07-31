@@ -33,6 +33,15 @@ public partial class MainWindow : Window
         (ScheduleManager.LogonTask, "Logon / unlock"),
     };
 
+    /// <summary>One trigger row, so its buttons and state text can be refreshed later.</summary>
+    private sealed record SchedRow(string Task, Button Enable, Button Disable, Button Remove, TextBlock State);
+
+    private readonly List<SchedRow> _rows = new();
+
+    // Pickers built in BuildScheduleRows, held so EnableSchedule can read them.
+    private ComboBox _dailyHour = null!, _dailyMinute = null!;
+    private ComboBox _monthlyHour = null!, _monthlyMinute = null!, _monthlyDay = null!;
+
     public MainWindow()
     {
         InitializeComponent();
@@ -52,6 +61,7 @@ public partial class MainWindow : Window
         DestGrid.ItemsSource = _targets;
         LoadConfigIntoUi();
         BuildScheduleRows();
+        LoadScheduleTimesFromTasks();
         RefreshLastRunSummary();
 
         _tray = CreateTray();
@@ -86,7 +96,7 @@ public partial class MainWindow : Window
         EmailHost.Text = em.SmtpHost;
         EmailPort.Text = em.SmtpPort.ToString(CultureInfo.InvariantCulture);
         EmailModeBox.SelectedIndex = em.Mode switch { FolderSync.EmailMode.OnError => 1, FolderSync.EmailMode.OnSuccess => 2, _ => 0 };
-        if (em.HasPassword) EmailStatus.Text = "Password saved.";
+        UpdatePasswordHint();
 
         UnlockNote.Text = "“Logon / unlock” syncs when you sign in and each time you unlock the screen, "
                         + $"at most once every {_config.MinMinutesBetweenAutoSyncs} minutes. "
@@ -179,16 +189,15 @@ public partial class MainWindow : Window
 
         if (_targets.Any(t => string.Equals(t.Destination, picked, StringComparison.OrdinalIgnoreCase)))
         {
-            MessageBox.Show(this, "That destination is already in the list.", "Folder Sync");
+            MessageWindow.Info(this, "Already added", "That folder is already one of your destinations.");
             return;
         }
 
         if (PathUtil.SameOrNested(_config.Source, picked))
         {
-            MessageBox.Show(this,
-                "That folder is the source — or nested inside/around it.\n\n"
-                + "With Mirror on, syncing there could delete your files. Pick a different destination.",
-                "Unsafe destination", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageWindow.Warn(this, "Unsafe destination",
+                "That folder is the source — or nested inside or around it.\n\n"
+                + "Syncing there in Mirror mode could delete your files, so please pick a different folder.");
             return;
         }
 
@@ -206,10 +215,10 @@ public partial class MainWindow : Window
     {
         if (DestGrid.SelectedItem is not SyncTarget target) return;
 
-        var answer = MessageBox.Show(this,
-            $"Stop syncing to:\n\n{target.Name} — {target.Destination}\n\nThe folder's files are not deleted.",
-            "Remove destination", MessageBoxButton.YesNo, MessageBoxImage.Question);
-        if (answer == MessageBoxResult.Yes) _targets.Remove(target);
+        if (MessageWindow.Confirm(this, "Remove destination",
+                $"Stop syncing to:\n\n{target.Name}\n{target.Destination}\n\nThe folder's own files are not deleted.",
+                primary: "Remove"))
+            _targets.Remove(target);
     }
 
     private static string? PickFolder(string description, string? startAt)
@@ -261,10 +270,9 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(_config.Source) || !Directory.Exists(_config.Source))
         {
-            MessageBox.Show(this,
-                $"The source folder does not exist:\n\n{(string.IsNullOrWhiteSpace(_config.Source) ? "(empty)" : _config.Source)}\n\n"
-                + "Please correct it and try again.",
-                "Invalid source folder", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageWindow.Warn(this, "Source folder not found",
+                $"This folder does not exist:\n\n{(string.IsNullOrWhiteSpace(_config.Source) ? "(no folder set)" : _config.Source)}\n\n"
+                + "Please correct the source folder and try again.");
             StatusText.Text = "Source folder not found.";
             SourceBox.Focus();
             SourceBox.SelectAll();
@@ -273,10 +281,9 @@ public partial class MainWindow : Window
 
         if (!_config.Targets.Any(t => t.Enabled))
         {
-            MessageBox.Show(this,
+            MessageWindow.Warn(this, "No destinations",
                 "No destinations are enabled, so there is nothing to sync to.\n\n"
-                + "Use “Add destination…” to choose a folder, then try again.",
-                "No destinations", MessageBoxButton.OK, MessageBoxImage.Warning);
+                + "Use “Add destination…” to choose a folder, then try again.");
             StatusText.Text = "Add at least one destination.";
             return;
         }
@@ -285,10 +292,14 @@ public partial class MainWindow : Window
         if (offline.Count > 0)
         {
             string list = string.Join("\n", offline.Select(t => $"  • {t.Name} — {t.Destination}"));
-            var answer = MessageBox.Show(this,
-                $"These destinations are not available and will be skipped:\n\n{list}\n\nContinue anyway?",
-                "Destination not available", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-            if (answer != MessageBoxResult.Yes) { StatusText.Text = "Cancelled."; return; }
+            if (!MessageWindow.Confirm(this, "Destination not available",
+                    $"These destinations cannot be reached and will be skipped:\n\n{list}\n\n"
+                    + "Is the cloud client running, or the drive plugged in?",
+                    primary: "Sync anyway", tone: DialogTone.Warning))
+            {
+                StatusText.Text = "Cancelled.";
+                return;
+            }
         }
 
         _cts = new CancellationTokenSource();
@@ -396,68 +407,146 @@ public partial class MainWindow : Window
     private void BuildScheduleRows()
     {
         ScheduleRows.Children.Clear();
+        _rows.Clear();
         ScheduleRows.Children.Add(new TextBlock
         {
             Text = "Triggers",
             Style = (Style)FindResource("CardTitle"),
         });
 
-        foreach (var (task, label) in _scheduleTasks)
-        {
-            var row = new Grid { Margin = new Thickness(0, 4, 0, 4) };
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(140) });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
-            row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        // Each trigger carries only the settings it actually needs, so there is nothing to fill in
+        // for logon/unlock and no free-text field anywhere that could hold an impossible time.
+        _dailyHour = MakeNumberPicker(0, 23, 18);
+        _dailyMinute = MakeNumberPicker(0, 55, 0, step: 5);
+        ScheduleRows.Children.Add(MakeScheduleRow("Daily", ScheduleManager.DailyTask,
+            TimeControls("at", _dailyHour, _dailyMinute)));
 
-            var name = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
-            Grid.SetColumn(name, 0);
-            row.Children.Add(name);
+        _monthlyHour = MakeNumberPicker(0, 23, 18);
+        _monthlyMinute = MakeNumberPicker(0, 55, 0, step: 5);
+        _monthlyDay = MakeNumberPicker(1, 28, 1);
+        var monthly = TimeControls("at", _monthlyHour, _monthlyMinute);
+        monthly.Children.Add(new TextBlock { Text = "on day", Margin = new Thickness(12, 0, 8, 0) });
+        monthly.Children.Add(_monthlyDay);
+        ScheduleRows.Children.Add(MakeScheduleRow("Monthly", ScheduleManager.MonthlyTask, monthly));
 
-            var buttons = new StackPanel { Orientation = Orientation.Horizontal };
-            var enable = new Button { Content = "Enable", Tag = task };
-            var disable = new Button { Content = "Disable", Tag = task };
-            var remove = new Button { Content = "Remove", Tag = task };
-            enable.Click += (_, _) => ApplySchedule(() => EnableSchedule(task), $"{label}: enable");
-            disable.Click += (_, _) => ApplySchedule(() => ScheduleManager.SetEnabled(task, false), $"{label}: disable");
-            remove.Click += (_, _) => ApplySchedule(() => ScheduleManager.Remove(task), $"{label}: remove");
-            buttons.Children.Add(enable);
-            buttons.Children.Add(disable);
-            buttons.Children.Add(remove);
-            Grid.SetColumn(buttons, 1);
-            row.Children.Add(buttons);
-
-            var state = new TextBlock
-            {
-                Margin = new Thickness(12, 0, 0, 0),
-                Style = (Style)FindResource("Subtle"),
-                VerticalAlignment = VerticalAlignment.Center,
-                Tag = task,
-            };
-            Grid.SetColumn(state, 2);
-            row.Children.Add(state);
-
-            ScheduleRows.Children.Add(row);
-        }
+        ScheduleRows.Children.Add(MakeScheduleRow("Logon / unlock", ScheduleManager.LogonTask, null));
 
         RefreshScheduleStates();
+    }
+
+    /// <summary>"at [hh] : [mm]" — pickers rather than a text box, so only valid times exist.</summary>
+    private StackPanel TimeControls(string lead, ComboBox hour, ComboBox minute)
+    {
+        var panel = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        panel.Children.Add(new TextBlock { Text = lead, Margin = new Thickness(0, 0, 8, 0) });
+        panel.Children.Add(hour);
+        panel.Children.Add(new TextBlock { Text = ":", Margin = new Thickness(4, 0, 4, 0) });
+        panel.Children.Add(minute);
+        return panel;
+    }
+
+    private ComboBox MakeNumberPicker(int from, int to, int selected, int step = 1)
+    {
+        var combo = new ComboBox
+        {
+            Width = 62,
+            Style = (Style)FindResource("ThemedComboBox"),
+            VerticalAlignment = VerticalAlignment.Center,
+            Margin = new Thickness(0),
+        };
+        for (int v = from; v <= to; v += step) combo.Items.Add(v.ToString("00", CultureInfo.InvariantCulture));
+        combo.SelectedItem = selected.ToString("00", CultureInfo.InvariantCulture);
+        if (combo.SelectedItem is null && combo.Items.Count > 0) combo.SelectedIndex = 0;
+        return combo;
+    }
+
+    private Grid MakeScheduleRow(string label, string task, StackPanel? extras)
+    {
+        var row = new Grid { Margin = new Thickness(0, 5, 0, 5) };
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(120) });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        row.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+
+        var name = new TextBlock { Text = label, VerticalAlignment = VerticalAlignment.Center };
+        Grid.SetColumn(name, 0);
+        row.Children.Add(name);
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
+        var enable = new Button { Content = "Enable" };
+        var disable = new Button { Content = "Disable" };
+        var remove = new Button { Content = "Remove" };
+        enable.Click += (_, _) => ApplySchedule(() => EnableSchedule(task), $"{label}: enable");
+        disable.Click += (_, _) => ApplySchedule(() => ScheduleManager.SetEnabled(task, false), $"{label}: disable");
+        remove.Click += (_, _) => ApplySchedule(() => ScheduleManager.Remove(task), $"{label}: remove");
+        buttons.Children.Add(enable);
+        buttons.Children.Add(disable);
+        buttons.Children.Add(remove);
+        Grid.SetColumn(buttons, 1);
+        row.Children.Add(buttons);
+
+        if (extras is not null)
+        {
+            extras.Margin = new Thickness(6, 0, 0, 0);
+            Grid.SetColumn(extras, 2);
+            row.Children.Add(extras);
+        }
+
+        var state = new TextBlock
+        {
+            Margin = new Thickness(14, 0, 0, 0),
+            Style = (Style)FindResource("Subtle"),
+            VerticalAlignment = VerticalAlignment.Center,
+        };
+        Grid.SetColumn(state, 3);
+        row.Children.Add(state);
+
+        _rows.Add(new SchedRow(task, enable, disable, remove, state));
+        return row;
     }
 
     private (bool ok, string msg) EnableSchedule(string task)
     {
         if (!ConfirmExePathForScheduling()) return (false, "cancelled");
 
-        var time = ParseTime(TimeBox.Text);
-        if (task == ScheduleManager.DailyTask) return ScheduleManager.RegisterDaily(time);
+        if (task == ScheduleManager.DailyTask)
+            return ScheduleManager.RegisterDaily(PickedTime(_dailyHour, _dailyMinute));
+
         if (task == ScheduleManager.MonthlyTask)
-        {
-            int day = int.TryParse(MonthDayBox.Text, out int d) ? Math.Clamp(d, 1, 28) : 1;
-            return ScheduleManager.RegisterMonthly(time, day);
-        }
+            return ScheduleManager.RegisterMonthly(PickedTime(_monthlyHour, _monthlyMinute), Picked(_monthlyDay, 1));
+
         return ScheduleManager.RegisterLogon();
     }
 
-    private static TimeOnly ParseTime(string text) =>
-        TimeOnly.TryParse(text, CultureInfo.CurrentCulture, out var t) ? t : new TimeOnly(18, 0);
+    private static TimeOnly PickedTime(ComboBox hour, ComboBox minute) =>
+        new(Picked(hour, 18), Picked(minute, 0));
+
+    private static int Picked(ComboBox combo, int fallback) =>
+        combo.SelectedItem is string s && int.TryParse(s, out int v) ? v : fallback;
+
+    /// <summary>Shows the time a registered task actually runs at, rather than a stale default.</summary>
+    private void LoadScheduleTimesFromTasks()
+    {
+        var daily = ScheduleManager.GetCalendarSchedule(ScheduleManager.DailyTask);
+        if (daily.time is { } dt) SelectTime(_dailyHour, _dailyMinute, dt);
+
+        var monthly = ScheduleManager.GetCalendarSchedule(ScheduleManager.MonthlyTask);
+        if (monthly.time is { } mt) SelectTime(_monthlyHour, _monthlyMinute, mt);
+        if (monthly.day is { } day) Select(_monthlyDay, day);
+    }
+
+    private static void SelectTime(ComboBox hour, ComboBox minute, TimeOnly time)
+    {
+        Select(hour, time.Hour);
+        // Minutes are in 5-minute steps; snap to the nearest available entry.
+        Select(minute, time.Minute - (time.Minute % 5));
+    }
+
+    private static void Select(ComboBox combo, int value)
+    {
+        string text = value.ToString("00", CultureInfo.InvariantCulture);
+        if (combo.Items.Contains(text)) combo.SelectedItem = text;
+    }
 
     private void ApplySchedule(Func<(bool ok, string msg)> action, string what)
     {
@@ -466,11 +555,11 @@ public partial class MainWindow : Window
             var (ok, msg) = action();
             AppendEvent($"[Schedule] {what}: {(ok ? "OK" : "FAILED")} {msg}");
             if (!ok && !msg.Contains("cancelled", StringComparison.OrdinalIgnoreCase))
-                MessageBox.Show(this, msg, "Schedule", MessageBoxButton.OK, MessageBoxImage.Warning);
+                MessageWindow.Warn(this, "Schedule not changed", msg);
         }
         catch (Exception ex)
         {
-            MessageBox.Show(this, ex.Message, "Schedule", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageWindow.Warn(this, "Schedule not changed", ex.Message);
         }
         RefreshScheduleStates();
     }
@@ -478,27 +567,18 @@ public partial class MainWindow : Window
     /// <summary>Greys out buttons that don't apply and shows each trigger's state.</summary>
     private void RefreshScheduleStates()
     {
-        foreach (var child in ScheduleRows.Children)
+        foreach (var row in _rows)
         {
-            if (child is not Grid row) continue;
-
-            var buttons = row.Children.OfType<StackPanel>().FirstOrDefault()?.Children.OfType<Button>().ToList();
-            var state = row.Children.OfType<TextBlock>().FirstOrDefault(t => t.Tag is string);
-            string? task = buttons?.FirstOrDefault()?.Tag as string;
-            if (buttons is null || task is null) continue;
-
-            var st = ScheduleManager.GetState(task);
-            buttons[0].IsEnabled = st != ScheduleManager.TaskState.Enabled;
-            buttons[1].IsEnabled = st == ScheduleManager.TaskState.Enabled;
-            buttons[2].IsEnabled = st != ScheduleManager.TaskState.NotInstalled;
-
-            if (state is not null)
-                state.Text = st switch
-                {
-                    ScheduleManager.TaskState.Enabled => "enabled",
-                    ScheduleManager.TaskState.Disabled => "installed but disabled",
-                    _ => "not installed",
-                };
+            var st = ScheduleManager.GetState(row.Task);
+            row.Enable.IsEnabled = st != ScheduleManager.TaskState.Enabled;
+            row.Disable.IsEnabled = st == ScheduleManager.TaskState.Enabled;
+            row.Remove.IsEnabled = st != ScheduleManager.TaskState.NotInstalled;
+            row.State.Text = st switch
+            {
+                ScheduleManager.TaskState.Enabled => "enabled",
+                ScheduleManager.TaskState.Disabled => "installed but disabled",
+                _ => "not installed",
+            };
         }
     }
 
@@ -506,12 +586,12 @@ public partial class MainWindow : Window
     {
         if (!ScheduleManager.IsBuildOutputPath()) return true;
 
-        return MessageBox.Show(this,
+        return MessageWindow.Confirm(this, "Running from a build folder",
             "This copy is running from a build output folder:\n\n"
             + ScheduleManager.ExePath
             + "\n\nA schedule created now would stop working as soon as the project is rebuilt. "
-            + "Run the installed copy instead.\n\nCreate it anyway?",
-            "Running from a build folder", MessageBoxButton.YesNo, MessageBoxImage.Warning) == MessageBoxResult.Yes;
+            + "Run the installed copy instead.",
+            primary: "Create anyway", tone: DialogTone.Warning);
     }
 
     private void WarnAboutStaleTaskTargets()
@@ -527,13 +607,13 @@ public partial class MainWindow : Window
 
         AppendEvent("[Schedule] stale target(s): " + string.Join(" | ", stale.Select(s => $"{s.label} -> {s.exe}")));
 
-        var answer = MessageBox.Show(this,
-            "These schedules point at a program file that no longer exists, so they never run:\n\n"
-            + string.Join("\n", stale.Select(s => $"  • {s.label} → {s.exe}"))
-            + "\n\nRepair them to use this copy?\n\n" + ScheduleManager.ExePath
-            + "\n\n(Times and days are kept.)",
-            "Schedules need repair", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (answer != MessageBoxResult.Yes) return;
+        if (!MessageWindow.Confirm(this, "Schedules need repair",
+                "These schedules point at a program file that no longer exists, so they never run:\n\n"
+                + string.Join("\n", stale.Select(s => $"  • {s.label} → {s.exe}"))
+                + "\n\nRepair them to use this copy?\n\n" + ScheduleManager.ExePath
+                + "\n\nTimes and days are kept as they are.",
+                primary: "Repair", tone: DialogTone.Warning))
+            return;
 
         foreach (var s in stale)
         {
@@ -541,7 +621,7 @@ public partial class MainWindow : Window
             AppendEvent($"[Schedule] repair {s.label}: {(ok ? "OK" : "FAILED")} {msg}");
         }
         RefreshScheduleStates();
-        MessageBox.Show(this, "Schedules repaired.", "Folder Sync", MessageBoxButton.OK, MessageBoxImage.Information);
+        MessageWindow.Info(this, "Schedules repaired", "They now point at this copy of Folder Sync.");
     }
 
     // ===================== Email =====================
@@ -553,6 +633,24 @@ public partial class MainWindow : Window
     }
 
     private void Email_LostFocus(object sender, RoutedEventArgs e) => SaveEmail();
+
+    private void EmailPassword_Changed(object sender, RoutedEventArgs e) => UpdatePasswordHint();
+
+    /// <summary>
+    /// Shows whether a password is already stored, since a PasswordBox looks identical whether it
+    /// is empty or holding a secret we deliberately never read back out.
+    /// </summary>
+    private void UpdatePasswordHint()
+    {
+        if (EmailPassword.Password.Length > 0)
+        {
+            EmailPasswordHint.Text = "";
+            return;
+        }
+        EmailPasswordHint.Text = _config.Email.HasPassword
+            ? "•••••••••••••••  saved — type to replace"
+            : "paste the 16-character App Password";
+    }
     private void EmailMode_Changed(object sender, SelectionChangedEventArgs e) => SaveEmail();
 
     private void SaveEmail()
@@ -574,6 +672,7 @@ public partial class MainWindow : Window
             em.SetPassword(EmailPassword.Password.Replace(" ", ""));
             EmailPassword.Clear();
             EmailStatus.Text = "Password saved.";
+            UpdatePasswordHint();
         }
 
         try { _config.Save(); }
@@ -582,15 +681,14 @@ public partial class MainWindow : Window
 
     private void AppPasswordHelp_Click(object sender, RoutedEventArgs e)
     {
-        var answer = MessageBox.Show(this,
-            "Gmail needs a 16-character App Password, not your normal password.\n\n"
-            + "1. Turn on 2-Step Verification\n"
-            + "2. Create an App Password for “Mail”\n"
-            + "3. Paste the 16-character code here (spaces are fine)\n\n"
-            + "Each Google account has its own App Password and you can revoke it at any time.\n\n"
-            + "Open the App Passwords page now?",
-            "How to get an App Password", MessageBoxButton.YesNo, MessageBoxImage.Information);
-        if (answer == MessageBoxResult.Yes) OpenPath("https://myaccount.google.com/apppasswords");
+        if (MessageWindow.Confirm(this, "How to get an App Password",
+                "Gmail needs a 16-character App Password, not your normal password.\n\n"
+                + "1.  Turn on 2-Step Verification\n"
+                + "2.  Create an App Password for “Mail”\n"
+                + "3.  Paste the 16-character code here — spaces are fine\n\n"
+                + "Each Google account has its own App Password, and you can revoke it at any time.",
+                primary: "Open the page"))
+            OpenPath("https://myaccount.google.com/apppasswords");
     }
 
     private void SendTest_Click(object sender, RoutedEventArgs e)
@@ -623,7 +721,7 @@ public partial class MainWindow : Window
                     + "Create one at myaccount.google.com/apppasswords (app = Mail) and paste the "
                     + "16-character code into the App password box.\n\nOriginal error:\n" + ex.Message;
             }
-            MessageBox.Show(this, msg, "Test email failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageWindow.Warn(this, "Test email failed", msg);
         }
     }
 
@@ -690,19 +788,19 @@ public partial class MainWindow : Window
 
         if (string.IsNullOrWhiteSpace(_config.Source) || !Directory.Exists(_config.Source))
         {
-            MessageBox.Show(this, "The source folder is not set or doesn't exist, so there is nowhere to restore to.",
-                "Cannot restore", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageWindow.Warn(this, "Cannot restore",
+                "The source folder is not set or doesn't exist, so there is nowhere to restore to.");
             return;
         }
 
-        var answer = MessageBox.Show(this,
+        // Explicit button labels beat Yes/No here: "No" meaning "overwrite" would be a trap.
+        var choice = MessageWindow.Choose(this, "Restore files",
             $"Restore {files.Count} file(s) into the source folder?\n\n{_config.Source}\n\n"
-            + "The next sync will then copy them to every destination again.\n\n"
-            + "Files that already exist are skipped — choose No to overwrite them instead.",
-            "Restore files", MessageBoxButton.YesNoCancel, MessageBoxImage.Question);
-        if (answer == MessageBoxResult.Cancel) return;
+            + "The next sync will copy them out to every destination again.",
+            primary: "Skip existing", secondary: "Overwrite existing");
+        if (choice == DialogChoice.Cancel) return;
 
-        bool overwrite = answer == MessageBoxResult.No;
+        bool overwrite = choice == DialogChoice.Secondary;
         var result = RecycleStore.Restore(batch.Path, files, _config.Source, overwrite);
 
         RestoreStatus.Text = $"Restored {result.Restored}, skipped {result.Skipped}"
@@ -723,10 +821,11 @@ public partial class MainWindow : Window
     {
         if (BatchGrid.SelectedItem is not RecycleBatch batch) return;
 
-        var answer = MessageBox.Show(this,
-            $"Permanently delete this batch?\n\n{batch.Path}\n\n{batch.FileCount} file(s), {batch.SizeText}.\n\nThis cannot be undone.",
-            "Delete batch", MessageBoxButton.YesNo, MessageBoxImage.Warning);
-        if (answer != MessageBoxResult.Yes) return;
+        if (!MessageWindow.Confirm(this, "Delete batch",
+                $"Permanently delete this batch?\n\n{batch.Path}\n\n{batch.FileCount} file(s), {batch.SizeText}.\n\n"
+                + "This cannot be undone.",
+                primary: "Delete", tone: DialogTone.Danger))
+            return;
 
         var (ok, msg) = RecycleStore.DeleteBatch(batch.Path);
         RestoreStatus.Text = ok ? "Batch deleted." : "Could not delete: " + msg;
@@ -827,7 +926,10 @@ public partial class MainWindow : Window
     private static void OpenPath(string path)
     {
         try { Process.Start(new ProcessStartInfo { FileName = path, UseShellExecute = true }); }
-        catch (Exception ex) { MessageBox.Show($"Could not open:\n{path}\n\n{ex.Message}"); }
+        catch (Exception ex)
+        {
+            MessageWindow.Warn(Application.Current?.MainWindow, "Could not open", $"{path}\n\n{ex.Message}");
+        }
     }
 
     private static void TryWrite(string path, string text)

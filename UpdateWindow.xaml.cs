@@ -58,9 +58,8 @@ public partial class UpdateWindow : Window
             StatusText.Text = "Download failed.";
             UpdateButton.IsEnabled = true;
             LaterButton.IsEnabled = true;
-            MessageBox.Show(this,
-                $"Could not download the update:\n\n{ex.Message}\n\nYou can download it manually from GitHub.",
-                "Update failed", MessageBoxButton.OK, MessageBoxImage.Warning);
+            MessageWindow.Warn(this, "Update failed",
+                $"Could not download the update:\n\n{ex.Message}\n\nYou can download it manually from GitHub.");
         }
         finally
         {

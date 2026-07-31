@@ -1,0 +1,42 @@
+<Window x:Class="FolderSync.MessageWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        SizeToContent="Height" Width="500" MinHeight="170"
+        MaxHeight="640"
+        ResizeMode="NoResize" ShowInTaskbar="False"
+        WindowStartupLocation="CenterOwner"
+        Background="{DynamicResource WindowBg}"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True">
+    <Grid Margin="22,20,22,18">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <!-- A coloured bar instead of a system icon: keeps the dialog in the app's own visual language -->
+        <Grid Grid.Row="0" Margin="0,0,0,12">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+            <Border x:Name="Accentbar" Grid.Column="0" Width="4" CornerRadius="2"
+                    Background="{DynamicResource Accent}" Margin="0,2,14,2"/>
+            <TextBlock Grid.Column="1" x:Name="HeadingText" Style="{StaticResource H1}"
+                       FontSize="18" TextWrapping="Wrap" Margin="0"/>
+        </Grid>
+
+        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" MaxHeight="420">
+            <TextBlock x:Name="BodyText" TextWrapping="Wrap" Margin="18,0,0,0"
+                       VerticalAlignment="Top" LineHeight="19"/>
+        </ScrollViewer>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,20,0,0">
+            <Button x:Name="CancelBtn" Content="Cancel" Visibility="Collapsed" Click="Cancel_Click"/>
+            <Button x:Name="SecondaryBtn" Content="No" Visibility="Collapsed" Click="Secondary_Click"/>
+            <Button x:Name="PrimaryBtn" Content="OK" Style="{StaticResource PrimaryButton}"
+                    Margin="0" MinWidth="92" Click="Primary_Click"/>
+        </StackPanel>
+    </Grid>
+</Window>
