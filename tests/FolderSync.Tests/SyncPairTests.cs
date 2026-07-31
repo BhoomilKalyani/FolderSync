@@ -117,6 +117,104 @@ public class SyncPairTests
         Assert.Null(new SyncPair { Left = L, Right = R }.Validate());
     }
 
+    // ---------- folder validation (uses real folders) ----------
+
+    /// <summary>
+    /// The rule is symmetric: whichever side is being READ must exist, whichever side is being
+    /// WRITTEN may be created. An earlier version only ever checked the left folder, so a mistyped
+    /// right-hand path produced no error at all.
+    /// </summary>
+    public sealed class FolderValidation : IDisposable
+    {
+        private readonly string _root = Path.Combine(Path.GetTempPath(), "FSPairVal", Guid.NewGuid().ToString("N"));
+        private readonly string _real;
+        private readonly string _missing;
+
+        public FolderValidation()
+        {
+            _real = Path.Combine(_root, "real");
+            _missing = Path.Combine(_root, "not-created-yet");
+            Directory.CreateDirectory(_real);
+        }
+
+        public void Dispose()
+        {
+            try { if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true); } catch { }
+        }
+
+        private static string Unmounted()
+        {
+            var used = DriveInfo.GetDrives().Select(d => d.Name[0]).ToHashSet();
+            char free = "ZYXWVU".First(c => !used.Contains(c));
+            return $@"{free}:\nowhere";
+        }
+
+        [Fact]
+        public void A_missing_RIGHT_folder_is_an_error_when_the_right_side_is_read()
+        {
+            var pair = new SyncPair { Left = _real, Right = _missing, Direction = SyncDirection.ToLeft };
+
+            var problem = pair.ValidateFolders();
+
+            Assert.NotNull(problem);
+            Assert.Contains("Right", problem);
+        }
+
+        [Fact]
+        public void A_missing_LEFT_folder_is_an_error_when_the_left_side_is_read()
+        {
+            var pair = new SyncPair { Left = _missing, Right = _real, Direction = SyncDirection.ToRight };
+
+            var problem = pair.ValidateFolders();
+
+            Assert.NotNull(problem);
+            Assert.Contains("Left", problem);
+        }
+
+        [Fact]
+        public void TwoWay_requires_both_folders_because_it_reads_from_both()
+        {
+            Assert.NotNull(new SyncPair { Left = _real, Right = _missing, Direction = SyncDirection.TwoWay }.ValidateFolders());
+            Assert.NotNull(new SyncPair { Left = _missing, Right = _real, Direction = SyncDirection.TwoWay }.ValidateFolders());
+        }
+
+        [Theory]
+        [InlineData(SyncDirection.ToRight)]   // right is written, so it may be created
+        [InlineData(SyncDirection.ToLeft)]    // left is written, so it may be created
+        public void A_receiving_folder_that_does_not_exist_yet_is_allowed(SyncDirection direction)
+        {
+            var pair = direction == SyncDirection.ToRight
+                ? new SyncPair { Left = _real, Right = _missing, Direction = direction }
+                : new SyncPair { Left = _missing, Right = _real, Direction = direction };
+
+            Assert.Null(pair.ValidateFolders());
+            Assert.NotNull(pair.FolderNote());          // but the user is told it will be created
+        }
+
+        [Fact]
+        public void An_unmounted_drive_is_an_error_even_on_the_receiving_side()
+        {
+            // Catches a typo such as "X:\backup" that no amount of creating could fix.
+            var pair = new SyncPair { Left = _real, Right = Unmounted(), Direction = SyncDirection.ToRight };
+
+            var problem = pair.ValidateFolders();
+
+            Assert.NotNull(problem);
+            Assert.Contains("drive is not available", problem);
+        }
+
+        [Fact]
+        public void A_pair_with_two_real_folders_has_no_problem_and_no_note()
+        {
+            var other = Path.Combine(_root, "other");
+            Directory.CreateDirectory(other);
+            var pair = new SyncPair { Left = _real, Right = other, Direction = SyncDirection.TwoWay };
+
+            Assert.Null(pair.ValidateFolders());
+            Assert.Null(pair.FolderNote());
+        }
+    }
+
     // ---------- change notification ----------
 
     [Fact]

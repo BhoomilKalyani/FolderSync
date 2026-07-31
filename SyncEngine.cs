@@ -135,18 +135,17 @@ public sealed class SyncEngine
     };
 
     /// <summary>Returns why a pair cannot run, or null if it is good to go.</summary>
-    private string? CheckPair(SyncPair pair, bool listOnly)
+    private static string? CheckPair(SyncPair pair, bool listOnly)
     {
-        // Same/nested folders would let a mirror delete its own source, or loop forever.
-        if (pair.Validate() is { } invalid) return invalid;
+        // The same rule the pair dialog enforces: same/nested folders are unsafe, the side being
+        // read from must exist, and the receiving side needs a reachable drive.
+        if (pair.ValidateFolders() is { } invalid) return invalid;
 
-        // The side being read from has to exist; the receiving side we can create.
+        if (listOnly) return null;
+
+        // The receiving side may legitimately not exist yet.
         foreach (var pass in pair.Passes())
         {
-            if (!Directory.Exists(pass.From)) return $"folder does not exist: {pass.From}";
-            if (!PathUtil.DriveAvailable(pass.To)) return $"drive not available: {pass.To}";
-
-            if (listOnly) continue;
             try { Directory.CreateDirectory(pass.To); }
             catch (Exception ex) { return $"cannot create {pass.To}: {ex.Message}"; }
         }

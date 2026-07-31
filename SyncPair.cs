@@ -143,7 +143,7 @@ public sealed class SyncPair : INotifyPropertyChanged
         },
     };
 
-    /// <summary>Why this pair cannot run, or null when it is usable.</summary>
+    /// <summary>Why this pair cannot run, ignoring the filesystem, or null when it looks usable.</summary>
     public string? Validate()
     {
         if (string.IsNullOrWhiteSpace(Left) || string.IsNullOrWhiteSpace(Right))
@@ -152,6 +152,44 @@ public sealed class SyncPair : INotifyPropertyChanged
             return "the two folders are the same, or one is inside the other";
         return null;
     }
+
+    /// <summary>
+    /// The same check plus the folders themselves, or null when the pair can run. Used by both the
+    /// pair dialog and the engine so they can never disagree about what is acceptable.
+    ///
+    /// The rule is direction-aware and symmetric: a folder being *read from* must already exist,
+    /// while a folder being *written to* only needs a reachable drive, since it can be created.
+    /// Two-way reads from both sides, so both must exist.
+    /// </summary>
+    public string? ValidateFolders()
+    {
+        if (Validate() is { } basic) return basic;
+
+        foreach (var pass in Passes())
+        {
+            if (!Directory.Exists(pass.From))
+                return $"{SideOf(pass.From)} folder does not exist: {pass.From}";
+
+            // Catches a mistyped or unmounted drive, e.g. "X:\backup".
+            if (!PathUtil.DriveAvailable(pass.To))
+                return $"{SideOf(pass.To)} drive is not available: {pass.To}";
+        }
+        return null;
+    }
+
+    /// <summary>A non-blocking note, e.g. that the receiving folder will be created.</summary>
+    public string? FolderNote()
+    {
+        if (ValidateFolders() is not null) return null;
+
+        foreach (var pass in Passes())
+            if (!Directory.Exists(pass.To))
+                return $"{SideOf(pass.To)} folder does not exist yet and will be created: {pass.To}";
+        return null;
+    }
+
+    private string SideOf(string path) =>
+        string.Equals(path, Left, StringComparison.OrdinalIgnoreCase) ? "Left" : "Right";
 }
 
 /// <summary>A single one-directional copy that the engine runs.</summary>

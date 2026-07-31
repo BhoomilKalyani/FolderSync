@@ -68,25 +68,34 @@ public partial class PairWindow : Window
                 ? "Files missing from the source will be removed from the receiving folder — recoverable from Recycled files."
                 : "Additive: files are only added or updated, never deleted.";
 
-        ErrorText.Text = Problem() ?? "";
+        // Red for something that blocks saving, muted grey for a heads-up.
+        string? error = Problem();
+        string? note = error is null ? Candidate()?.FolderNote() : null;
+        ErrorText.Text = error ?? note ?? "";
+        ErrorText.Foreground = (System.Windows.Media.Brush)FindResource(error is not null ? "Bad" : "FgMuted");
     }
 
-    /// <summary>Validation shown live and enforced on save.</summary>
-    private string? Problem()
+    /// <summary>The pair as currently typed, or null while a folder is still blank.</summary>
+    private SyncPair? Candidate()
     {
         string left = LeftBox.Text.Trim();
         string right = RightBox.Text.Trim();
+        if (left.Length == 0 || right.Length == 0) return null;
 
-        if (left.Length == 0 || right.Length == 0) return null;   // nothing typed yet; stay quiet
-        if (PathUtil.SameOrNested(left, right))
-            return "Those folders are the same, or one is inside the other — pick separate folders.";
-
-        // Warn early rather than failing at sync time.
-        if (!Directory.Exists(left)) return $"Left folder does not exist: {left}";
-        if (!Directory.Exists(right) && SelectedDirection != SyncDirection.ToRight)
-            return $"Right folder does not exist: {right}";
-        return null;
+        return new SyncPair
+        {
+            Left = left,
+            Right = right,
+            Direction = SelectedDirection,
+            Mirror = MirrorCheck.IsChecked == true,
+        };
     }
+
+    /// <summary>
+    /// Validation shown live and enforced on save. Delegates to SyncPair so the dialog applies
+    /// exactly the same rule the engine will — checked for both folders, not just the left one.
+    /// </summary>
+    private string? Problem() => Candidate()?.ValidateFolders();
 
     private void BrowseLeft_Click(object sender, RoutedEventArgs e)
     {

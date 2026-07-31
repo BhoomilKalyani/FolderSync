@@ -271,32 +271,24 @@ public partial class MainWindow : Window
             return;
         }
 
-        // Pairs whose folders are missing or overlapping would be skipped by the engine anyway;
-        // saying so up front is friendlier than finding out in the log.
-        var broken = active.Where(p => p.Validate() is not null
-                                    || !Directory.Exists(p.Left)
-                                    || (p.Direction != SyncDirection.ToRight && !Directory.Exists(p.Right)))
+        // Uses the pair's own rule, so this warning always matches what the engine will actually do.
+        var broken = active.Select(p => (pair: p, problem: p.ValidateFolders()))
+                           .Where(x => x.problem is not null)
                            .ToList();
         if (broken.Count > 0)
         {
-            string list = string.Join("\n", broken.Select(p =>
-                $"  • {p.DisplayName} — {p.Validate() ?? "a folder is missing"}"));
-            if (!MessageWindow.Confirm(this, "Some pairs cannot run",
-                    $"These pairs will be skipped:\n\n{list}\n\nContinue with the rest?",
-                    primary: "Sync anyway", tone: DialogTone.Warning))
+            if (broken.Count == active.Count)
             {
-                StatusText.Text = "Cancelled.";
+                MessageWindow.Warn(this, "Nothing can be synced",
+                    "Every enabled pair has a problem:\n\n"
+                    + string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}")));
+                StatusText.Text = "Fix the folder pairs and try again.";
                 return;
             }
-        }
 
-        var offline = active.Where(p => !PathUtil.DriveAvailable(p.Left) || !PathUtil.DriveAvailable(p.Right)).ToList();
-        if (offline.Count > 0)
-        {
-            string list = string.Join("\n", offline.Select(p => $"  • {p.DisplayName}"));
-            if (!MessageWindow.Confirm(this, "Folder not available",
-                    $"These pairs use a drive that cannot be reached and will be skipped:\n\n{list}\n\n"
-                    + "Is the cloud client running, or the drive plugged in?",
+            string list = string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}"));
+            if (!MessageWindow.Confirm(this, "Some pairs cannot run",
+                    $"These pairs will be skipped:\n\n{list}\n\nContinue with the rest?",
                     primary: "Sync anyway", tone: DialogTone.Warning))
             {
                 StatusText.Text = "Cancelled.";
