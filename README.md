@@ -227,8 +227,12 @@ Common causes:
 | Email fails with `5.7.9` | You used your account password instead of an App Password. |
 
 Logs live in `%LOCALAPPDATA%\FolderSync\logs` (**Open log folder** in the app): one
-`sync-<timestamp>.log` per run, `preview-*.log` for dry runs, and `events.log` for schedule/update
-events. Sync and preview logs are pruned after 7 days.
+`sync-<timestamp>.log` per run, `preview-*.log` for dry runs, and `events.log` for schedule, update
+and crash events. Sync and preview logs are pruned after 7 days; `events.log` is trimmed to its most
+recent entries once it grows past half a megabyte.
+
+If `config.json` is ever unreadable, Folder Sync keeps it as `config.bad-<timestamp>.json` beside it
+and starts from defaults rather than overwriting your settings — `events.log` says what happened.
 
 ---
 
@@ -365,6 +369,29 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
 ---
 
 ## Version history
+
+### 1.1.3
+
+Correctness and robustness only — no new features.
+
+- **A damaged `config.json` is no longer destroyed.** Loading an unreadable config used to replace it
+  with defaults on the spot, silently wiping every folder pair, the email settings and the schedule
+  preferences. It is now kept as `config.bad-<timestamp>.json` and the reason is written to
+  `events.log`.
+- **The health check no longer contradicts the engine.** A disconnected drive is reported as a
+  warning that the pair will be skipped, not a failure, and a skipped pair is no longer listed as
+  `OK`. It also reports previous versions kept, and whether the large-deletion guard is on.
+- **A partly-downloaded update is never executed.** The installer's length is checked against what
+  the release says before it is run; a truncated download is deleted and reported.
+- **Fixed a latent hang.** Scheduled-task queries read their output and error streams one after the
+  other, which deadlocks if a task ever produces enough output to fill a pipe. Both are now drained
+  together.
+- **`events.log` is capped.** Only the per-run logs were being pruned, so this one grew for the
+  lifetime of the installation.
+- **Check Health and the Recycled files list no longer freeze the window** — both do their scanning
+  off the UI thread.
+- Three relative-time formatters that had drifted into disagreeing, and two copies each of the size
+  formatter and the scheduled-task parser, are now one of each.
 
 ### 1.1.2
 

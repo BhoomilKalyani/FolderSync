@@ -48,16 +48,7 @@ public sealed class RecycleBatch
         ? System.IO.Path.GetFileName(Path)
         : When.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
 
-    public string SizeText => FormatSize(TotalBytes);
-
-    internal static string FormatSize(long bytes)
-    {
-        string[] units = { "B", "KB", "MB", "GB", "TB" };
-        double v = bytes;
-        int u = 0;
-        while (v >= 1024 && u < units.Length - 1) { v /= 1024; u++; }
-        return $"{v:0.#} {units[u]}";
-    }
+    public string SizeText => Humanise.Size(TotalBytes);
 }
 
 /// <summary>A single recycled file, with the relative path it originally had.</summary>
@@ -67,7 +58,7 @@ public sealed class RecycledFile
     public string FullPath { get; init; } = "";
     public long Length { get; init; }
     public DateTime Modified { get; init; }
-    public string SizeText => RecycleBatch.FormatSize(Length);
+    public string SizeText => Humanise.Size(Length);
 }
 
 public sealed class RestoreResult

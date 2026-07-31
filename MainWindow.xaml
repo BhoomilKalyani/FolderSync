@@ -1,7 +1,6 @@
 ﻿<Window x:Class="FolderSync.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:local="clr-namespace:FolderSync"
         Title="Folder Sync" Height="720" Width="1040"
         MinHeight="560" MinWidth="880"
         WindowStartupLocation="CenterScreen"

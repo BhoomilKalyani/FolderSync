@@ -154,16 +154,7 @@ internal static class Program
         args.Any(a => a.Equals(flag, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>Appends a line to the small rolling events log (shared with the GUI).</summary>
-    private static void AppendEvent(string line)
-    {
-        try
-        {
-            Directory.CreateDirectory(SyncConfig.LogDir);
-            File.AppendAllText(Path.Combine(SyncConfig.LogDir, "events.log"),
-                $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {line}{Environment.NewLine}");
-        }
-        catch { /* not critical */ }
-    }
+    private static void AppendEvent(string line) => SyncConfig.AppendEvent(line);
 
     /// <summary>Sends the notification email if enabled and the mode condition is met. Never throws.</summary>
     private static void TrySendEmail(SyncConfig config, SyncResult result, string logPath)

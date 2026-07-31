@@ -39,17 +39,7 @@ public sealed class PairStatus
     /// only discoverable by reading logs.
     /// </summary>
     [System.Text.Json.Serialization.JsonIgnore]
-    public string Text => $"{(Skipped ? "Not connected" : Success ? "OK" : "Failed")} · {Ago(When)}";
-
-    public static string Ago(DateTime when)
-    {
-        var age = DateTime.Now - when;
-        if (age < TimeSpan.Zero) return "just now";              // clock changed under us
-        if (age.TotalMinutes < 1) return "just now";
-        if (age.TotalMinutes < 60) return $"{age.TotalMinutes:0} min ago";
-        if (age.TotalHours < 24) return $"{age.TotalHours:0} hour(s) ago";
-        return $"{age.TotalDays:0} day(s) ago";
-    }
+    public string Text => $"{(Skipped ? "Not connected" : Success ? "OK" : "Failed")} · {Humanise.Ago(When)}";
 }
 
 /// <summary>

@@ -75,7 +75,10 @@ public static class Diagnostics
             {
                 if (!PathUtil.DriveAvailable(path))
                 {
-                    Line(sb, "FAIL", $"       {side}: drive not available (is the cloud client running?) {path}");
+                    // WARN, not FAIL: the engine skips a pair whose drive is absent rather than
+                    // failing it, and the health check must not contradict that.
+                    Line(sb, "WARN", $"       {side}: drive not connected - this pair will be skipped, "
+                                   + $"which is not treated as an error.  {path}");
                     continue;
                 }
                 if (!Directory.Exists(path))
@@ -92,6 +95,25 @@ public static class Diagnostics
             if (p.DeletesExtras && !config.RecycleDeletedFiles)
                 Line(sb, "WARN", "       mirrors with the recycle safety net turned off - deletions are permanent.");
         }
+
+        // The guard is the difference between a wrong source folder costing nothing and costing the
+        // whole destination, so its state belongs in a health report.
+        if (pairs.Any(p => p.Enabled && p.DeletesExtras))
+        {
+            if (config.GuardLargeDeletions)
+                Line(sb, "OK", $"Large-deletion guard: on - a mirror stops if it would remove over "
+                             + $"{config.LargeDeletionPercent}% of the receiving side "
+                             + $"(and at least {config.LargeDeletionMinimumFiles} files).");
+            else
+                Line(sb, "WARN", "Large-deletion guard: OFF - a mirror will delete whatever the sending "
+                               + "side no longer has, however much that is.");
+        }
+
+        if (pairs.Any(p => p.Enabled && p.Direction == SyncDirection.TwoWay))
+            Line(sb, config.BackupOverwrittenFiles ? "OK" : "WARN",
+                 config.BackupOverwrittenFiles
+                     ? "Two-way overwrites: the replaced version is kept and can be rolled back."
+                     : "Two-way overwrites: the replaced version is NOT kept - the older copy is lost.");
 
         var patterns = (config.ExcludeFiles ?? new()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
         var folders = (config.ExcludeFolders ?? new()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
@@ -122,8 +144,8 @@ public static class Diagnostics
             }
 
             any = true;
-            string target = ScheduleManager.GetTaskTarget(task) ?? "";
-            string exe = target.Replace("\"", "").Replace(" --sync", "").Replace(" --auto", "").Trim();
+            // Uses ScheduleManager's own parsing rather than a second copy of it, which had drifted.
+            string exe = ScheduleManager.GetTaskExe(task) ?? "";
 
             if (exe.Length > 0 && !File.Exists(exe))
                 Line(sb, "FAIL", $"{label}: {state}, but its program file is missing - it never runs. "
@@ -151,14 +173,22 @@ public static class Diagnostics
         }
 
         var age = DateTime.Now - last.When;
-        string when = $"{last.When:yyyy-MM-dd HH:mm:ss} ({FormatAge(age)} ago)";
+        string when = $"{last.When:yyyy-MM-dd HH:mm:ss} ({Humanise.Ago(last.When)})";
         Line(sb, last.Success ? "OK" : "FAIL", $"{when} - {(last.Success ? "succeeded" : "completed with errors")}");
 
         foreach (var d in last.Destinations)
-            Line(sb, d.Success ? "OK" : "FAIL",
-                 $"       {d.Name}: {d.FilesCopied} copied, {d.FilesFailed} failed"
-                 + (d.FilesRecycled > 0 ? $", {d.FilesRecycled} recycled" : "")
-                 + (string.IsNullOrEmpty(d.Note) ? "" : $" - {d.Note}"));
+        {
+            // A skipped destination leaves Success true so the run stays green, so testing Success
+            // alone would print OK for a pair that never ran.
+            string status = d.Skipped ? "SKIP" : d.Success ? "OK" : "FAIL";
+
+            Line(sb, status, d.Skipped
+                ? $"       {d.Name}: skipped - {(string.IsNullOrEmpty(d.Note) ? "no detail" : d.Note)}"
+                : $"       {d.Name}: {d.FilesCopied} copied, {d.FilesFailed} failed"
+                  + (d.FilesRecycled > 0 ? $", {d.FilesRecycled} deletions kept" : "")
+                  + (d.FilesBackedUp > 0 ? $", {d.FilesBackedUp} previous versions kept" : "")
+                  + (string.IsNullOrEmpty(d.Note) ? "" : $" - {d.Note}"));
+        }
 
         if (age > TimeSpan.FromDays(7))
             Line(sb, "WARN", "The last sync was over a week ago - check the schedules above.");
@@ -213,21 +243,8 @@ public static class Diagnostics
         {
             string? root = Path.GetPathRoot(Path.GetFullPath(path));
             if (root is null || root.StartsWith(@"\\")) return "";
-            return $"   ({FormatSize(new DriveInfo(root).AvailableFreeSpace)} free)";
+            return $"   ({Humanise.Size(new DriveInfo(root).AvailableFreeSpace)} free)";
         }
         catch { return ""; }
     }
-
-    private static string FormatSize(long bytes)
-    {
-        string[] units = { "B", "KB", "MB", "GB", "TB" };
-        double v = bytes;
-        int u = 0;
-        while (v >= 1024 && u < units.Length - 1) { v /= 1024; u++; }
-        return $"{v:0.#} {units[u]}";
-    }
-
-    private static string FormatAge(TimeSpan age) => age.TotalDays >= 1
-        ? $"{age.TotalDays:0.#} day(s)"
-        : age.TotalHours >= 1 ? $"{age.TotalHours:0.#} hour(s)" : $"{age.TotalMinutes:0} min";
 }

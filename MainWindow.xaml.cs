@@ -437,12 +437,25 @@ public partial class MainWindow : Window
         LastRunGrid.Visibility = last.Destinations.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
-    private void Health_Click(object sender, RoutedEventArgs e)
+    private async void Health_Click(object sender, RoutedEventArgs e)
     {
         SaveConfig();
+
+        // The report launches half a dozen schtasks processes and walks every folder pair, which is
+        // long enough to freeze the window if it runs on the UI thread.
+        var button = sender as Button;
+        if (button is not null) button.IsEnabled = false;
+        Status = "Checking…";
+
         string report;
-        try { report = Diagnostics.Run(_config); }
+        try { report = await Task.Run(() => Diagnostics.Run(_config)); }
         catch (Exception ex) { report = "Health check failed: " + ex; }
+        finally
+        {
+            if (button is not null) button.IsEnabled = true;
+            Status = "Ready.";
+        }
+
         new TextWindow("Health check", "Folder Sync health check", report) { Owner = this }.ShowDialog();
     }
 
@@ -771,17 +784,30 @@ public partial class MainWindow : Window
 
     // ===================== Recycled files =====================
 
-    private void RefreshRecycled_Click(object sender, RoutedEventArgs e) => LoadRecycled();
+    private void RefreshRecycled_Click(object sender, RoutedEventArgs e) => _ = LoadRecycledAsync();
 
-    private void LoadRecycled()
+    private void LoadRecycled() => _ = LoadRecycledAsync();
+
+    /// <summary>
+    /// Lists the recycled batches. The scan walks every file of every batch on both sides of every
+    /// pair to total up counts and sizes, which is slow enough to stall the window after a month of
+    /// retained batches — so it runs off the UI thread.
+    /// </summary>
+    private async Task LoadRecycledAsync()
     {
         SaveConfig();
-        _batches = RecycleStore.GetBatches(_config);
-        BatchGrid.ItemsSource = _batches;
+
         RecycledFileGrid.ItemsSource = null;
         RecycledFilesTitle.Text = "Files";
+        RestoreMeaningText.Text = "";
+        RestoreStatus.Text = "Looking…";
+
+        var config = _config;
+        _batches = await Task.Run(() => RecycleStore.GetBatches(config));
+
+        BatchGrid.ItemsSource = _batches;
         RestoreStatus.Text = _batches.Count == 0
-            ? "Nothing has been recycled. Files appear here when a mirror sync would otherwise delete them."
+            ? "Nothing has been recycled. Files appear here when a sync would otherwise delete or replace them."
             : $"{_batches.Count} batch(es) found.";
         UpdateRestoreButtons();
     }
@@ -1063,16 +1089,12 @@ public partial class MainWindow : Window
         try { File.WriteAllText(path, text); } catch { /* logging must not break a sync */ }
     }
 
-    /// <summary>Appends to the rolling events log (schedule, email and update activity).</summary>
+    /// <summary>
+    /// Appends to the rolling events log (schedule, email and update activity). The lock keeps two
+    /// writes from this window from interleaving; SyncConfig owns the file format and the trimming.
+    /// </summary>
     private void AppendEvent(string line)
     {
-        try
-        {
-            Directory.CreateDirectory(SyncConfig.LogDir);
-            lock (_logLock)
-                File.AppendAllText(Path.Combine(SyncConfig.LogDir, "events.log"),
-                    $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {line}{Environment.NewLine}");
-        }
-        catch { /* not critical */ }
+        lock (_logLock) SyncConfig.AppendEvent(line);
     }
 }

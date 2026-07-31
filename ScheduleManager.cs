@@ -47,9 +47,17 @@ public static class ScheduleManager
             CreateNoWindow = true,
         };
         using var p = Process.Start(psi)!;
-        string outp = p.StandardOutput.ReadToEnd() + p.StandardError.ReadToEnd();
+
+        // Both pipes are drained at the same time. Reading one to completion and only then the other
+        // deadlocks if the child fills the pipe it is not being read from - the classic hang. schtasks
+        // output is small enough that it has never happened, but /Query /XML on a large task is not
+        // obviously small, and this runs on the startup path.
+        var stdout = p.StandardOutput.ReadToEndAsync();
+        var stderr = p.StandardError.ReadToEndAsync();
+        Task.WaitAll(stdout, stderr);
         p.WaitForExit();
-        return (p.ExitCode, outp.Trim());
+
+        return (p.ExitCode, (stdout.Result + stderr.Result).Trim());
     }
 
     private static string Xml(string description, string triggersXml, string arguments)

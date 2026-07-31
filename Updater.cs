@@ -101,14 +101,21 @@ public static class Updater
         long setupSize = 0;
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
-            foreach (var a in assets.EnumerateArray())
-            {
-                string name = a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "";
-                if (!name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) continue;
-                setupUrl = a.TryGetProperty("browser_download_url", out var d) ? d.GetString() : null;
-                setupSize = a.TryGetProperty("size", out var s) ? s.GetInt64() : 0;
-                break;
-            }
+            // An installer is preferred over any other .exe that happens to be attached, rather than
+            // trusting whichever one GitHub lists first.
+            var exes = assets.EnumerateArray()
+                .Select(a => (
+                    name: a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
+                    url: a.TryGetProperty("browser_download_url", out var d) ? d.GetString() : null,
+                    size: a.TryGetProperty("size", out var s) ? s.GetInt64() : 0))
+                .Where(a => a.name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && a.url is not null)
+                .ToList();
+
+            var chosen = exes.FirstOrDefault(a => a.name.Contains("Setup", StringComparison.OrdinalIgnoreCase));
+            if (chosen.url is null) chosen = exes.FirstOrDefault();
+
+            setupUrl = chosen.url;
+            setupSize = chosen.size;
         }
 
         return new UpdateInfo
@@ -155,20 +162,39 @@ public static class Updater
         resp.EnsureSuccessStatusCode();
 
         long total = resp.Content.Headers.ContentLength ?? info.SetupSize;
+        long written = 0;
+
         await using (var src = await resp.Content.ReadAsStreamAsync(ct))
         await using (var dst = File.Create(file))
         {
             var buffer = new byte[81920];
-            long done = 0;
             int read;
             while ((read = await src.ReadAsync(buffer, ct)) > 0)
             {
                 await dst.WriteAsync(buffer.AsMemory(0, read), ct);
-                done += read;
-                if (total > 0) progress?.Report((int)(done * 100 / total));
+                written += read;
+                if (total > 0) progress?.Report((int)(written * 100 / total));
             }
         }
+
+        // This file is about to be executed, so a partial download must not reach that point. A
+        // connection dropped mid-transfer otherwise leaves a truncated installer that Windows will
+        // still happily launch.
+        long expected = info.SetupSize > 0 ? info.SetupSize : total;
+        if (expected > 0 && written != expected)
+        {
+            TryDelete(file);
+            throw new IOException(
+                $"The download is incomplete ({Humanise.Size(written)} of {Humanise.Size(expected)}). "
+                + "Nothing has been installed — check your connection and try again.");
+        }
+
         return file;
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { File.Delete(path); } catch { /* a leftover in the temp folder is harmless */ }
     }
 
     /// <summary>

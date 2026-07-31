@@ -252,6 +252,46 @@ public sealed class SyncConfig
         return Path.Combine(LogDir, $"{prefix}-{DateTime.Now:yyyyMMdd-HHmmss-fff}.log");
     }
 
+    [JsonIgnore]
+    public static string EventLogPath => Path.Combine(LogDir, "events.log");
+
+    /// <summary>
+    /// Appends one timestamped line to the rolling events log, trimming it when it gets large.
+    ///
+    /// Both the window and the headless run write here, and nothing used to remove anything: only
+    /// sync-*.log and preview-*.log were pruned, so this file grew for the lifetime of the install.
+    /// Never throws — logging must not be able to break a sync.
+    /// </summary>
+    public static void AppendEvent(string line)
+    {
+        try
+        {
+            Directory.CreateDirectory(LogDir);
+            File.AppendAllText(EventLogPath, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  {line}{Environment.NewLine}");
+            TrimLog(EventLogPath);
+        }
+        catch { /* not critical */ }
+    }
+
+    /// <summary>
+    /// Keeps only the most recent lines once a log passes a size worth caring about. Path-taking so it
+    /// can be tested against a temporary file. Never throws — leaving a log long is better than
+    /// losing it, and far better than breaking whatever was being logged.
+    /// </summary>
+    public static void TrimLog(string path, int keepLines = 500, long maxBytes = 512 * 1024)
+    {
+        try
+        {
+            var info = new FileInfo(path);
+            if (!info.Exists || info.Length <= maxBytes) return;
+
+            var kept = File.ReadAllLines(path).TakeLast(keepLines).ToList();
+            kept.Insert(0, $"{DateTime.Now:yyyy-MM-dd HH:mm:ss}  [Log] trimmed to the last {keepLines} entries.");
+            File.WriteAllLines(path, kept);
+        }
+        catch { /* leaving it long is better than losing it */ }
+    }
+
     /// <summary>Deletes sync/preview log files older than the given number of days.</summary>
     public static void CleanupOldLogs(int days = 7)
     {
@@ -305,9 +345,12 @@ public sealed class SyncConfig
                     return cfg;
                 }
             }
-            catch
+            catch (Exception ex)
             {
-                // Fall through to defaults if the file is missing or corrupt.
+                // A damaged config used to be replaced by defaults on the spot, silently destroying
+                // every folder pair, the email settings and the schedule preferences. Keep the file so
+                // it can be inspected or repaired by hand, and leave a note saying what happened.
+                PreserveUnreadableConfig(ex);
             }
         }
 
@@ -316,11 +359,36 @@ public sealed class SyncConfig
         return def;
     }
 
+    /// <summary>Sets the damaged file aside and records why, then lets the caller fall back to defaults.</summary>
+    private static void PreserveUnreadableConfig(Exception cause)
+    {
+        string? kept = MoveConfigAside(ConfigPath, DateTime.Now);
+        AppendEvent($"[Config] could not be read ({cause.Message}). "
+                  + (kept is null ? "It could not be set aside." : $"Kept as {kept}.")
+                  + " Started from defaults.");
+    }
+
     /// <summary>
-    /// Turns an old single-source config into folder pairs — one "left to right" pair per
-    /// destination, keeping each destination's mirror setting, so behaviour is unchanged.
-    /// Returns true when something was migrated (and the caller should save).
+    /// Renames a config file that could not be read to "config.bad-&lt;timestamp&gt;.json", so the
+    /// defaults written next do not destroy it. Returns the new path, or null if it could not be moved.
+    ///
+    /// Takes the path rather than using <see cref="ConfigPath"/> so it can be tested without touching
+    /// the real configuration. Never throws: this runs on the way to a fallback that has to succeed.
     /// </summary>
+    public static string? MoveConfigAside(string configPath, DateTime when)
+    {
+        try
+        {
+            if (!File.Exists(configPath)) return null;
+
+            string folder = Path.GetDirectoryName(configPath) ?? "";
+            string kept = Path.Combine(folder, $"config.bad-{when:yyyyMMdd-HHmmss}.json");
+            File.Move(configPath, kept, overwrite: true);
+            return kept;
+        }
+        catch { return null; }
+    }
+
     /// <summary>
     /// Removes pairs that point at a cloud account through the old "account:folder" syntax.
     ///
@@ -353,6 +421,11 @@ public sealed class SyncConfig
         return true;
     }
 
+    /// <summary>
+    /// Turns an old single-source config into folder pairs — one "left to right" pair per
+    /// destination, keeping each destination's mirror setting, so behaviour is unchanged.
+    /// Returns true when something was migrated (and the caller should save).
+    /// </summary>
     public bool MigrateTargetsToPairs()
     {
         if (Pairs.Count > 0) return false;                       // already on the new model
