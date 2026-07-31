@@ -1,0 +1,32 @@
+<Window x:Class="FolderSync.UpdateWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Update available" Height="520" Width="620"
+        MinHeight="380" MinWidth="480"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource WindowBg}"
+        TextOptions.TextFormattingMode="Display">
+    <DockPanel Margin="20">
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock x:Name="Heading" Style="{StaticResource H1}"/>
+            <TextBlock x:Name="SubHeading" Style="{StaticResource Subtle}" Margin="0,0,0,14"/>
+        </StackPanel>
+
+        <StackPanel DockPanel.Dock="Bottom" Margin="0,14,0,0">
+            <ProgressBar x:Name="Progress" Visibility="Collapsed" Margin="0,0,0,10"/>
+            <TextBlock x:Name="StatusText" Style="{StaticResource Subtle}" Margin="0,0,0,10"/>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="View on GitHub" Style="{StaticResource LinkButton}" Click="ViewOnline_Click"/>
+                <Button x:Name="LaterButton" Content="Later" Click="Later_Click"/>
+                <Button x:Name="UpdateButton" Content="Update now" Style="{StaticResource PrimaryButton}"
+                        Margin="0" Click="Update_Click"/>
+            </StackPanel>
+        </StackPanel>
+
+        <Border Style="{StaticResource Card}" Margin="0" Padding="2">
+            <TextBox x:Name="Notes" IsReadOnly="True" BorderThickness="0" Background="Transparent"
+                     VerticalScrollBarVisibility="Auto" TextWrapping="Wrap"
+                     VerticalContentAlignment="Top" Padding="12"/>
+        </Border>
+    </DockPanel>
+</Window>

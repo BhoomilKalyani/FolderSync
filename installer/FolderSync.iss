@@ -27,6 +27,7 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
+AppCopyright=Copyright © 2026 Bhoomil Kalyani
 AppPublisherURL={#AppUrl}
 AppSupportURL={#AppUrl}/issues
 AppUpdatesURL={#AppUrl}/releases

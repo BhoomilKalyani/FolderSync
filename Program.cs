@@ -53,9 +53,32 @@ internal static class Program
             return 0;
         }
 
-        ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm());
-        return 0;
+        return RunGui();
+    }
+
+    /// <summary>
+    /// Starts the WPF UI. The Application object is created here rather than from an App.xaml,
+    /// because this method is the entry point (it also serves the headless/CLI modes above).
+    /// </summary>
+    private static int RunGui()
+    {
+        // WinForms is still initialised: the tray icon and folder picker come from it.
+        System.Windows.Forms.Application.EnableVisualStyles();
+        System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
+
+        var app = new System.Windows.Application
+        {
+            ShutdownMode = System.Windows.ShutdownMode.OnMainWindowClose,
+        };
+        app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
+        {
+            Source = new Uri("/FolderSync;component/Theme.xaml", UriKind.Relative),
+        });
+        ThemeManager.Apply(AppTheme.System);
+
+        var window = new MainWindow();
+        app.MainWindow = window;
+        return app.Run(window);
     }
 
     /// <summary>Silent run used by Task Scheduler. Writes a fresh log file per run and returns 0/1.</summary>

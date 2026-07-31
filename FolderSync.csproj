@@ -5,14 +5,22 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
+    <!-- WPF provides the UI. WinForms stays enabled for the tray icon (NotifyIcon) and the
+         folder browser dialog, which have no first-class WPF equivalent. -->
+    <UseWPF>true</UseWPF>
     <UseWindowsForms>true</UseWindowsForms>
+    <!-- Program.Main is the entry point (it also handles the headless/CLI modes), so WPF must
+         not generate one from an App.xaml - hence there is no App.xaml in this project. -->
+    <StartupObject>FolderSync.Program</StartupObject>
     <AssemblyName>FolderSync</AssemblyName>
     <RootNamespace>FolderSync</RootNamespace>
 
     <!-- Bump this to release an update; the installer and the update check both read it. -->
     <Version>1.0.0</Version>
     <Company>Bhoomil Kalyani</Company>
+    <Authors>Bhoomil Kalyani</Authors>
     <Product>Folder Sync</Product>
+    <Copyright>Copyright © 2026 Bhoomil Kalyani. Licensed under the MIT Licence.</Copyright>
     <Description>Mirrors a folder to multiple local cloud-sync folders (OneDrive, iCloud, Google Drive).</Description>
 
     <ApplicationIcon>FolderSync.ico</ApplicationIcon>
@@ -26,8 +34,21 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- Enabling WPF replaces the WinForms implicit-using set, which drops System.IO;
+         file/folder types are used throughout, so put it back globally. -->
+    <Using Include="System.IO" />
+    <!-- WinForms and WPF share type names (Application, MessageBox, Button, Color...). Drop the
+         WinForms implicit usings so those always mean WPF; the few WinForms types still needed
+         (NotifyIcon, FolderBrowserDialog) are reached through the "WinForms" alias instead. -->
+    <Using Remove="System.Windows.Forms" />
+    <Using Remove="System.Drawing" />
+  </ItemGroup>
+
+  <ItemGroup>
     <!-- Embedded so the window and tray can use the full multi-size icon at runtime. -->
     <EmbeddedResource Include="FolderSync.ico" LogicalName="FolderSync.ico" />
+    <!-- Shipped alongside the exe so About > View licence works offline. -->
+    <Content Include="LICENSE" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
   <ItemGroup>

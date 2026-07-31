@@ -13,6 +13,10 @@ public sealed class DestinationRun
     public int FilesFailed { get; set; }
     public int FilesRecycled { get; set; }
     public string Note { get; set; } = "";
+
+    /// <summary>Short outcome shown in the UI: "OK", "FAILED", or the reason it was skipped.</summary>
+    [System.Text.Json.Serialization.JsonIgnore]
+    public string ResultText => Success ? "OK" : string.IsNullOrWhiteSpace(Note) ? "FAILED" : Note;
 }
 
 /// <summary>
