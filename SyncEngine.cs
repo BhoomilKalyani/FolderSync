@@ -29,6 +29,10 @@ public sealed class SyncResult
 /// Performs the actual folder mirroring by wrapping Windows' built-in robocopy,
 /// which handles long paths, retries, multithreading and exact mirroring far more
 /// robustly than hand-rolled copy logic.
+///
+/// Cloud storage is reached as an ordinary folder - Google Drive, OneDrive, iCloud and Dropbox all
+/// mount one through their own desktop app - so it needs no separate code path here. See
+/// <see cref="CloudFolders"/> for why that route is preferred over talking to a provider's API.
 /// </summary>
 public sealed class SyncEngine
 {
@@ -97,7 +101,7 @@ public sealed class SyncEngine
             {
                 ct.ThrowIfCancellationRequested();
                 if (pair.Direction == SyncDirection.TwoWay)
-                    Emit($"    pass: {Path.GetFileName(pass.From.TrimEnd(Path.DirectorySeparatorChar))} -> {Path.GetFileName(pass.To.TrimEnd(Path.DirectorySeparatorChar))}");
+                    Emit($"    pass: {Leaf(pass.From)} -> {Leaf(pass.To)}");
 
                 // Mirror safety net: move whatever the purge would delete aside first.
                 if (!listOnly && pass.Mirror && _config.RecycleDeletedFiles)
@@ -151,6 +155,10 @@ public sealed class SyncEngine
         }
         return null;
     }
+
+    /// <summary>The last path segment, for readable two-way pass labels.</summary>
+    private static string Leaf(string path) =>
+        Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
     private string RecycleRoot(string dst) => Path.Combine(dst, _config.RecycleFolderName);
 

@@ -19,6 +19,7 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 | | |
 |---|---|
 | **Multiple folder pairs** | Set up as many independent pairs as you like; switch each on or off individually. |
+| **Finds your cloud storage** | Google Drive, OneDrive, iCloud, Dropbox and anything else that syncs into a folder are detected automatically and offered as a destination — no sign-in, no API keys, nothing to configure. |
 | **Three sync types** | Left → Right, Right → Left, or Two-way (both folders merged, newer file wins). |
 | **Mirror or additive** | A one-directional pair can mirror (an exact copy, deletions carry over) or stay additive — mirror to the cloud while a backup drive keeps everything. |
 | **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. |
@@ -59,16 +60,9 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 A fresh install starts empty — nothing is synced until you say so. The window has five pages in
 the sidebar: **Sync**, **Schedule**, **Notifications**, **Recycled files** and **About**.
 
-1. Click **Add pair…** and choose the two folders, the **sync type**, and whether it mirrors.
-   Typical right-hand folders:
-
-   | Target | Typical local folder |
-   |---|---|
-   | Google Drive | `G:\My Drive\…` (drive letter varies) |
-   | iCloud Drive | `%USERPROFILE%\iCloudDrive\…` |
-   | OneDrive | `%USERPROFILE%\OneDrive\…` |
-   | External / backup drive | `D:\…` |
-
+1. **Cloud storage found on this PC** lists the cloud services already installed. Click **Sync to
+   this…** next to one and pick the folder you want backed up — that is the whole setup.
+   Alternatively click **Add pair…** and choose both folders yourself.
 2. Repeat for as many pairs as you need — one source can feed several folders, and different pairs
    can use different folders entirely.
 3. Click **Preview** to see what would happen, then **Sync now** to do it.
@@ -76,9 +70,6 @@ the sidebar: **Sync**, **Schedule**, **Notifications**, **Recycled files** and *
 
 > **About Google Drive:** use a folder under **`My Drive`**. The *"Other computers"* section is a
 > read-only view of backups from other machines and does not upload changes.
->
-> **About iCloud:** it must be reachable as a local folder (iCloud for Windows installed). There is
-> no public API for iCloud Drive, so a local folder is the only supported route.
 
 Everything you edit saves immediately — there is no Save button.
 
@@ -306,6 +297,25 @@ Google Drive  iCloud    OneDrive     Backup drive
 - Deletions in mirror mode are detected with a **list-only pass** first, so they can be moved to
   the recycle folder before the real mirror runs.
 - Task Scheduler provides automation; the app itself doesn't need to stay running.
+
+### Why cloud storage is treated as a folder
+
+Folder Sync deliberately does **not** talk to Google Drive, OneDrive or Dropbox over their web APIs.
+Each of those services already has a desktop app that signs in and presents your files as an
+ordinary Windows folder, which makes the API redundant and strictly worse:
+
+- **Nothing to authorise.** No OAuth client, no token to expire, no consent screen.
+- **Nothing that can be withdrawn.** An app cannot ship a Google API client for full Drive access
+  without passing Google's paid verification review, so it would have to fall back on a shared
+  client — and Google is retiring the widely-used shared one during 2026.
+- **No rate limits.** API routes fail with `rateLimitExceeded` when the shared quota is busy.
+- **Far quicker.** Every file over an API is an HTTPS round trip; a measured transfer of three tiny
+  files took 51 seconds, against effectively nothing through the mounted folder.
+
+Detection reads the register Windows keeps of apps that sync a cloud account into a folder
+(`Explorer\SyncRootManager`), so a service does not need to be known to this code to be found —
+install it and it appears. Google Drive is the one special case: it mounts a drive letter containing
+`My Drive` rather than registering, so that is probed separately.
 
 ---
 

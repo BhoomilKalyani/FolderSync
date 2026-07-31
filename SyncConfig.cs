@@ -275,7 +275,9 @@ public sealed class SyncConfig
                     // Destinations saved before per-destination modes existed inherit the old
                     // global setting, so an existing mirror setup keeps mirroring.
                     foreach (var t in cfg.Targets) t.Mirror ??= cfg.Mirror;
-                    if (cfg.MigrateTargetsToPairs()) cfg.Save();
+                    bool changed = cfg.MigrateTargetsToPairs();
+                    changed |= cfg.DropUnusableCloudAccountPairs();
+                    if (changed) cfg.Save();
                     cfg.ExcludeFiles ??= new List<string>();
                     cfg.ExcludeFolders ??= new List<string>();
                     if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)
@@ -301,6 +303,38 @@ public sealed class SyncConfig
     /// destination, keeping each destination's mirror setting, so behaviour is unchanged.
     /// Returns true when something was migrated (and the caller should save).
     /// </summary>
+    /// <summary>
+    /// Removes pairs that point at a cloud account through the old "account:folder" syntax.
+    ///
+    /// A short-lived version reached cloud storage through a provider's API, which needed an OAuth
+    /// client that Google is withdrawing. Cloud storage is now reached as an ordinary folder through
+    /// the provider's own desktop app, so these pairs can no longer run - and leaving them in place
+    /// would make every sync report a failure. Returns true when something was removed.
+    /// </summary>
+    public bool DropUnusableCloudAccountPairs()
+    {
+        int before = Pairs.Count;
+        Pairs.RemoveAll(p => LooksLikeCloudAccountPath(p.Left) || LooksLikeCloudAccountPath(p.Right));
+        return Pairs.Count != before;
+    }
+
+    /// <summary>
+    /// True for "gdrive:Documents" but not for "C:\Docs" or "D:". The name has to be at least two
+    /// characters, which is what keeps a drive letter from matching.
+    /// </summary>
+    public static bool LooksLikeCloudAccountPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+
+        int colon = path.IndexOf(':');
+        if (colon < 2) return false;
+
+        foreach (char c in path[..colon])
+            if (!char.IsLetterOrDigit(c) && c != '_' && c != '-' && c != '.') return false;
+
+        return true;
+    }
+
     public bool MigrateTargetsToPairs()
     {
         if (Pairs.Count > 0) return false;                       // already on the new model

@@ -70,6 +70,22 @@ internal static class Program
         {
             ShutdownMode = System.Windows.ShutdownMode.OnMainWindowClose,
         };
+
+        // Without this a failure such as a bad data binding kills the window with no explanation
+        // and nothing written down. Record it and say so, rather than vanishing.
+        app.DispatcherUnhandledException += (_, e) =>
+        {
+            AppendEvent("[Crash] " + e.Exception);
+            try
+            {
+                System.Windows.MessageBox.Show(
+                    "Folder Sync hit an unexpected problem:\n\n" + e.Exception.Message
+                    + "\n\nThe details have been written to events.log in the log folder.",
+                    "Folder Sync", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            }
+            catch { /* if even the dialog fails, the log entry above is what matters */ }
+            e.Handled = true;
+        };
         app.Resources.MergedDictionaries.Add(new System.Windows.ResourceDictionary
         {
             Source = new Uri("/FolderSync;component/Theme.xaml", UriKind.Relative),

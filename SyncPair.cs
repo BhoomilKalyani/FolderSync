@@ -174,6 +174,7 @@ public sealed class SyncPair : INotifyPropertyChanged
             if (!PathUtil.DriveAvailable(pass.To))
                 return $"{SideOf(pass.To)} drive is not available: {pass.To}";
         }
+
         return null;
     }
 

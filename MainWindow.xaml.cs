@@ -1,9 +1,11 @@
 using System.Collections.ObjectModel;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Data;
 using WinForms = System.Windows.Forms;
 
 namespace FolderSync;
@@ -60,6 +62,7 @@ public partial class MainWindow : Window
 
         PairGrid.ItemsSource = _pairs;
         LoadConfigIntoUi();
+        RefreshMountedCloud();
         BuildScheduleRows();
         LoadScheduleTimesFromTasks();
         RefreshLastRunSummary();
@@ -158,8 +161,12 @@ public partial class MainWindow : Window
         for (int i = 0; i < pages.Length; i++)
             pages[i].Visibility = i == Nav.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
 
-        if (Nav.SelectedIndex == 1) RefreshScheduleStates();
-        if (Nav.SelectedIndex == 3) LoadRecycled();
+        switch (Nav.SelectedIndex)
+        {
+            case 0: RefreshMountedCloud(); break;   // a provider may have been installed since
+            case 1: RefreshScheduleStates(); break;
+            case 3: LoadRecycled(); break;
+        }
     }
 
     private void ThemeToggle_Click(object sender, RoutedEventArgs e)
@@ -184,6 +191,7 @@ public partial class MainWindow : Window
         }
         _pairs.Add(pair);
         PairGrid.SelectedItem = pair;
+        RefreshMountedCloud();   // the new pair may cover a detected cloud folder
     }
 
     private void EditPair_Click(object sender, RoutedEventArgs e) => EditSelectedPair();
@@ -205,6 +213,7 @@ public partial class MainWindow : Window
         // The pair object edits in place and raises change notifications, so the grid follows.
         SaveConfig();
         UpdateRecycleNote();
+        RefreshMountedCloud();
     }
 
     private void RemovePair_Click(object sender, RoutedEventArgs e)
@@ -267,7 +276,7 @@ public partial class MainWindow : Window
             MessageWindow.Warn(this, "Nothing to sync",
                 "No folder pair is enabled, so there is nothing to do.\n\n"
                 + "Use “Add pair…” to set up two folders, then try again.");
-            StatusText.Text = "Add at least one folder pair.";
+            Status = "Add at least one folder pair.";
             return;
         }
 
@@ -282,7 +291,7 @@ public partial class MainWindow : Window
                 MessageWindow.Warn(this, "Nothing can be synced",
                     "Every enabled pair has a problem:\n\n"
                     + string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}")));
-                StatusText.Text = "Fix the folder pairs and try again.";
+                Status = "Fix the folder pairs and try again.";
                 return;
             }
 
@@ -291,19 +300,19 @@ public partial class MainWindow : Window
                     $"These pairs will be skipped:\n\n{list}\n\nContinue with the rest?",
                     primary: "Sync anyway", tone: DialogTone.Warning))
             {
-                StatusText.Text = "Cancelled.";
+                Status = "Cancelled.";
                 return;
             }
         }
 
         _cts = new CancellationTokenSource();
         SetBusy(true);
-        StatusText.Text = listOnly ? "Previewing…" : "Syncing…";
+        Status = listOnly ? "Previewing…" : "Syncing…";
 
         var log = new StringBuilder();
         var engine = new SyncEngine(_config);
         engine.Log += line => { lock (_logLock) log.AppendLine(line); };
-        engine.Progress += p => Dispatcher.Invoke(() => StatusText.Text = p);
+        engine.Progress += p => Dispatcher.Invoke(() => Status = p);
 
         SyncResult? result = null;
         try
@@ -313,12 +322,12 @@ public partial class MainWindow : Window
         catch (OperationCanceledException)
         {
             lock (_logLock) log.AppendLine("CANCELLED by user.");
-            StatusText.Text = "Cancelled.";
+            Status = "Cancelled.";
         }
         catch (Exception ex)
         {
             lock (_logLock) log.AppendLine("FATAL: " + ex);
-            StatusText.Text = "Failed.";
+            Status = "Failed.";
         }
         finally
         {
@@ -331,7 +340,7 @@ public partial class MainWindow : Window
         {
             TryWrite(SyncConfig.NewPreviewLogPath(), log.ToString());
             SyncConfig.CleanupOldLogs(7);
-            if (result is not null) StatusText.Text = "Preview ready (also saved to the log folder).";
+            if (result is not null) Status = "Preview ready (also saved to the log folder).";
             new TextWindow("Preview", "Changes that would be made — nothing has been altered", log.ToString())
             { Owner = this }.ShowDialog();
             return;
@@ -346,7 +355,7 @@ public partial class MainWindow : Window
         LastRun.Save(result);
         RefreshLastRunSummary();
 
-        StatusText.Text = result.Success
+        Status = result.Success
             ? $"Done — {DateTime.Now:HH:mm:ss}."
             : $"Completed with errors — {DateTime.Now:HH:mm:ss}.";
 
@@ -355,6 +364,12 @@ public partial class MainWindow : Window
             (result.Success ? "Sync completed successfully." : "Sync completed with errors — see the log.")
             + (recycled > 0 ? $" {recycled} deleted item(s) moved to “{_config.RecycleFolderName}”." : ""),
             result.Success ? WinForms.ToolTipIcon.Info : WinForms.ToolTipIcon.Warning);
+    }
+
+    /// <summary>The status line under the sync buttons.</summary>
+    private string Status
+    {
+        set => StatusText.Text = value;
     }
 
     private void SetBusy(bool busy)
@@ -824,6 +839,75 @@ public partial class MainWindow : Window
         var (ok, msg) = RecycleStore.DeleteBatch(batch.Path);
         RestoreStatus.Text = ok ? "Batch deleted." : "Could not delete: " + msg;
         LoadRecycled();
+    }
+
+    // ===================== Cloud storage mounted as a folder =====================
+
+    private List<CloudFolder> _mountedCloud = new();
+
+    /// <summary>
+    /// Shows the cloud services whose desktop app already exposes them as a folder, so syncing to
+    /// Google Drive or OneDrive is a couple of clicks with no sign-in at all. This is the only cloud
+    /// route the app has: see <see cref="CloudFolders"/> for why talking to a provider's API was
+    /// tried and dropped.
+    /// </summary>
+    private void RefreshMountedCloud()
+    {
+        try { _mountedCloud = CloudFolders.Detect(); }
+        catch (Exception ex) { _mountedCloud = new List<CloudFolder>(); AppendEvent("[Cloud] detect failed: " + ex.Message); }
+
+        MountedCloudList.ItemsSource = _mountedCloud
+            .Select(f => new CloudFolderRow
+            {
+                Provider = f.Provider,
+                Path = f.Path,
+                InUse = _pairs.Any(p => Covers(p, f.Path)),
+            })
+            .ToList();
+
+        // Stays visible even with nothing found: the note below the list explains that installing a
+        // cloud app is all it takes for one to show up.
+        MountedCloudCard.Visibility = Visibility.Visible;
+    }
+
+    /// <summary>True when either side of a pair is at or inside <paramref name="folder"/>.</summary>
+    private static bool Covers(SyncPair pair, string folder) =>
+        Inside(pair.Left, folder) || Inside(pair.Right, folder);
+
+    private static bool Inside(string path, string folder)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string a = path.TrimEnd('\\', '/');
+        string b = folder.TrimEnd('\\', '/');
+        return a.Equals(b, StringComparison.OrdinalIgnoreCase)
+            || a.StartsWith(b + "\\", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>Starts a normal local pair with the cloud folder as the receiving side.</summary>
+    private void SyncToMountedCloud_Click(object sender, RoutedEventArgs e)
+    {
+        if ((sender as FrameworkElement)?.Tag is not string folder) return;
+
+        var pair = new SyncPair
+        {
+            Right = folder,
+            Direction = SyncDirection.ToRight,
+            Mirror = false,      // additive until the user chooses otherwise
+            Enabled = true,
+        };
+
+        var dlg = new PairWindow(pair, isNew: true) { Owner = this };
+        if (dlg.ShowDialog() != true) return;
+
+        if (_pairs.Any(p => SamePair(p, pair)))
+        {
+            MessageWindow.Info(this, "Already added", "A pair with those two folders already exists.");
+            return;
+        }
+
+        _pairs.Add(pair);
+        PairGrid.SelectedItem = pair;
+        RefreshMountedCloud();
     }
 
     // ===================== Updates =====================

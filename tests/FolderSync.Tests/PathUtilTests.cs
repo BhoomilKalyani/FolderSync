@@ -41,6 +41,17 @@ public class PathUtilTests
     }
 
     [Fact]
+    public void Cloud_storage_mounted_as_a_drive_is_compared_like_any_other_folder()
+    {
+        // Google Drive for Desktop appears as a drive letter, so nesting there is just as
+        // destructive as nesting locally and must be caught the same way.
+        Assert.True(PathUtil.SameOrNested(@"G:\My Drive\Docs", @"G:\My Drive\Docs"));
+        Assert.True(PathUtil.SameOrNested(@"G:\My Drive", @"G:\My Drive\Docs"));
+        Assert.False(PathUtil.SameOrNested(@"G:\My Drive\Docs", @"G:\My Drive\Photos"));
+        Assert.False(PathUtil.SameOrNested(@"G:\My Drive\Docs", @"C:\Docs"));
+    }
+
+    [Fact]
     public void DriveAvailable_accepts_the_system_drive()
     {
         string systemDrive = Path.GetPathRoot(Environment.SystemDirectory)!;

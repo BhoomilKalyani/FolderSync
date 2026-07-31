@@ -55,8 +55,51 @@
                 <!-- ============ PAGE: Sync ============ -->
                 <StackPanel x:Name="PageSync">
                     <TextBlock Text="Sync" Style="{StaticResource H1}"/>
-                    <TextBlock Style="{StaticResource Subtle}" Margin="0,0,0,18"
-                               Text="Each folder pair keeps two folders in step. Add as many pairs as you need."/>
+                    <TextBlock Style="{StaticResource Subtle}" Margin="0,0,0,18" TextWrapping="Wrap"
+                               Text="Each folder pair keeps two folders in step — on this PC, on a USB or network drive, or in cloud storage that appears as a folder."/>
+
+                    <!-- Cloud services already mounted as folders: the no-sign-in route -->
+                    <Border x:Name="MountedCloudCard" Style="{StaticResource Card}" Visibility="Collapsed">
+                        <StackPanel>
+                            <TextBlock Text="Cloud storage found on this PC" Style="{StaticResource CardTitle}"/>
+                            <TextBlock Style="{StaticResource Subtle}" Margin="0,0,0,12" TextWrapping="Wrap"
+                                       Text="These services already put your files in an ordinary folder, so Folder Sync can copy straight to them — no sign-in, no sharing limits, and much faster than going through the provider's API."/>
+
+                            <ItemsControl x:Name="MountedCloudList">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Border Background="{DynamicResource ControlBg}"
+                                                BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1"
+                                                CornerRadius="6" Padding="14,10" Margin="0,0,0,8">
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*"/>
+                                                    <ColumnDefinition Width="Auto"/>
+                                                </Grid.ColumnDefinitions>
+                                                <StackPanel Grid.Column="0" VerticalAlignment="Center">
+                                                    <StackPanel Orientation="Horizontal">
+                                                        <TextBlock Text="{Binding Provider}" FontWeight="SemiBold" FontSize="14"/>
+                                                        <TextBlock Text="{Binding StatusText}" Style="{StaticResource Subtle}" Margin="10,0,0,0"/>
+                                                    </StackPanel>
+                                                    <TextBlock Text="{Binding Path}" Style="{StaticResource Subtle}"
+                                                               Margin="0,4,12,0" TextTrimming="CharacterEllipsis"/>
+                                                </StackPanel>
+                                                <!-- OneWay: these are computed, read-only properties. -->
+                                                <Button Grid.Column="1" VerticalAlignment="Center"
+                                                        Content="Sync to this…" Tag="{Binding Path}"
+                                                        Visibility="{Binding ButtonVisibility, Mode=OneWay}"
+                                                        Click="SyncToMountedCloud_Click"/>
+                                            </Grid>
+                                        </Border>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+
+                            <TextBlock x:Name="MoreProvidersText" Style="{StaticResource Subtle}"
+                                       Margin="0,4,0,0" TextWrapping="Wrap"
+                                       Text="Add another cloud service later and it will appear here on its own — sign in to its desktop app and the folder it creates is picked up automatically, with nothing to set up in Folder Sync."/>
+                        </StackPanel>
+                    </Border>
 
                     <!-- Folder pairs -->
                     <Border Style="{StaticResource Card}">
@@ -82,11 +125,13 @@
                                             </DataTemplate>
                                         </DataGridTemplateColumn.CellTemplate>
                                     </DataGridTemplateColumn>
-                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName}" Width="140"/>
-                                    <DataGridTextColumn Header="Sync type" Binding="{Binding DirectionText}" Width="110"/>
-                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText}" Width="150"/>
-                                    <DataGridTextColumn Header="Left folder" Binding="{Binding Left}" Width="*" MinWidth="150"/>
-                                    <DataGridTextColumn Header="Right folder" Binding="{Binding Right}" Width="*" MinWidth="150"/>
+                                    <!-- OneWay throughout: these are computed, read-only properties and a
+                                         DataGridTextColumn binding is TwoWay unless told otherwise. -->
+                                    <DataGridTextColumn Header="Name" Binding="{Binding DisplayName, Mode=OneWay}" Width="140"/>
+                                    <DataGridTextColumn Header="Sync type" Binding="{Binding DirectionText, Mode=OneWay}" Width="110"/>
+                                    <DataGridTextColumn Header="Mode" Binding="{Binding ModeText, Mode=OneWay}" Width="150"/>
+                                    <DataGridTextColumn Header="Left folder" Binding="{Binding Left, Mode=OneWay}" Width="*" MinWidth="150"/>
+                                    <DataGridTextColumn Header="Right folder" Binding="{Binding Right, Mode=OneWay}" Width="*" MinWidth="150"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
@@ -149,8 +194,8 @@
                             <DataGrid x:Name="LastRunGrid" Margin="0,12,0,0" MaxHeight="180"
                                       Visibility="Collapsed" IsReadOnly="True">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="Destination" Binding="{Binding Name}" Width="150"/>
-                                    <DataGridTextColumn Header="Result" Binding="{Binding ResultText}" Width="110"/>
+                                    <DataGridTextColumn Header="Destination" Binding="{Binding Name, Mode=OneWay}" Width="150"/>
+                                    <DataGridTextColumn Header="Result" Binding="{Binding ResultText, Mode=OneWay}" Width="110"/>
                                     <DataGridTextColumn Header="Copied" Binding="{Binding FilesCopied}" Width="70"/>
                                     <DataGridTextColumn Header="Failed" Binding="{Binding FilesFailed}" Width="70"/>
                                     <DataGridTextColumn Header="Recycled" Binding="{Binding FilesRecycled}" Width="80"/>
