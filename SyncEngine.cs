@@ -365,7 +365,12 @@ public sealed class SyncEngine
 
         if (overwritten.Count == 0) return 0;
 
-        string trashRoot = Path.Combine(RecycleRoot(dst), DateTime.Now.ToString("yyyyMMdd-HHmmss"));
+        // Deliberately a separate batch from the deletions, marked with a suffix. These files were
+        // *replaced*, not deleted: putting the old copy back is a rollback that undoes the merge,
+        // whereas restoring a deletion is a recovery. Filing them together would tell the Recycled
+        // files page the wrong story about both.
+        string trashRoot = Path.Combine(
+            RecycleRoot(dst), DateTime.Now.ToString("yyyyMMdd-HHmmss") + RecycleStore.ReplacedSuffix);
         int kept = 0;
 
         foreach (var sourcePath in overwritten)

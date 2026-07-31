@@ -322,11 +322,12 @@
                             <DataGrid x:Name="BatchGrid" MinHeight="110" MaxHeight="200" IsReadOnly="True"
                                       SelectionChanged="BatchGrid_SelectionChanged">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="When" Binding="{Binding WhenText}" Width="160"/>
-                                    <DataGridTextColumn Header="Destination" Binding="{Binding DestinationName}" Width="150"/>
-                                    <DataGridTextColumn Header="Files" Binding="{Binding FileCount}" Width="70"/>
-                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="90"/>
-                                    <DataGridTextColumn Header="Folder" Binding="{Binding Path}" Width="*"/>
+                                    <DataGridTextColumn Header="When" Binding="{Binding WhenText, Mode=OneWay}" Width="145"/>
+                                    <DataGridTextColumn Header="Why" Binding="{Binding ReasonText, Mode=OneWay}" Width="160"/>
+                                    <DataGridTextColumn Header="Destination" Binding="{Binding DestinationName, Mode=OneWay}" Width="140"/>
+                                    <DataGridTextColumn Header="Files" Binding="{Binding FileCount, Mode=OneWay}" Width="60"/>
+                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText, Mode=OneWay}" Width="80"/>
+                                    <DataGridTextColumn Header="Folder" Binding="{Binding Path, Mode=OneWay}" Width="*"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                         </StackPanel>
@@ -335,12 +336,16 @@
                     <Border Style="{StaticResource Card}">
                         <StackPanel>
                             <TextBlock x:Name="RecycledFilesTitle" Text="Files" Style="{StaticResource CardTitle}"/>
+                            <!-- Says what restoring this particular batch would do: recovering a
+                                 deleted file and rolling back a replaced one are different acts. -->
+                            <TextBlock x:Name="RestoreMeaningText" Style="{StaticResource Subtle}"
+                                       Margin="0,0,0,10" TextWrapping="Wrap"/>
                             <DataGrid x:Name="RecycledFileGrid" MinHeight="140" MaxHeight="260" IsReadOnly="True"
                                       SelectionMode="Extended">
                                 <DataGrid.Columns>
-                                    <DataGridTextColumn Header="File" Binding="{Binding RelativePath}" Width="*"/>
-                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText}" Width="90"/>
-                                    <DataGridTextColumn Header="Modified" Binding="{Binding Modified, StringFormat=yyyy-MM-dd HH:mm}" Width="150"/>
+                                    <DataGridTextColumn Header="File" Binding="{Binding RelativePath, Mode=OneWay}" Width="*"/>
+                                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText, Mode=OneWay}" Width="90"/>
+                                    <DataGridTextColumn Header="Modified" Binding="{Binding Modified, Mode=OneWay, StringFormat=yyyy-MM-dd HH:mm}" Width="150"/>
                                 </DataGrid.Columns>
                             </DataGrid>
                             <StackPanel Orientation="Horizontal" Margin="0,12,0,0">

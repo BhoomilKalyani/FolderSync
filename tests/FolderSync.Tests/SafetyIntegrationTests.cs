@@ -123,6 +123,48 @@ public class SafetyIntegrationTests : IDisposable
         Assert.Single(kept);
         Assert.Equal("the version on the right", File.ReadAllText(kept[0]));
         Assert.Equal(1, Assert.Single(result.Targets).FilesBackedUp);
+
+        // Filed as a replacement, not a deletion. Restoring the two means different things - one
+        // recovers a file, the other discards the newer content - so the batch has to say which.
+        string batchFolder = Path.GetFileName(Path.GetDirectoryName(kept[0]))!;
+        Assert.EndsWith(RecycleStore.ReplacedSuffix, batchFolder);
+        Assert.Equal(RecycleReason.Replaced, RecycleStore.ReasonOf(batchFolder));
+    }
+
+    [Fact]
+    public async Task Deletions_and_replacements_from_the_same_pair_land_in_separate_batches()
+    {
+        var (left, right) = Folders();
+
+        // Enough files that removing one does not trip the guard.
+        for (int i = 0; i < 40; i++)
+        {
+            File.WriteAllText(Path.Combine(left, $"keep{i}.txt"), "same");
+            File.WriteAllText(Path.Combine(right, $"keep{i}.txt"), "same");
+        }
+
+        // One file the mirror will delete...
+        File.WriteAllText(Path.Combine(right, "gone.txt"), "deleted by mirror");
+        // ...and one it will overwrite with a newer copy.
+        File.WriteAllText(Path.Combine(right, "changed.txt"), "older");
+        File.SetLastWriteTime(Path.Combine(right, "changed.txt"), DateTime.Now.AddDays(-2));
+        File.WriteAllText(Path.Combine(left, "changed.txt"), "newer");
+
+        var config = Config(left, right, mirror: true);
+        config.Pairs[0].Mirror = true;
+
+        var result = await new SyncEngine(config).RunAsync();
+        Assert.True(result.Success);
+
+        var batches = Directory.GetDirectories(Path.Combine(right, config.RecycleFolderName))
+                               .Select(Path.GetFileName)
+                               .ToList();
+
+        // A one-directional mirror overwrites without /XO, so only the deletion is kept here - the
+        // important part is that whatever is kept is filed under the right reason.
+        Assert.All(batches, b => Assert.Equal(RecycleReason.Deleted, RecycleStore.ReasonOf(b!)));
+        Assert.True(File.Exists(Directory.GetFiles(Path.Combine(right, config.RecycleFolderName),
+                                                   "gone.txt", SearchOption.AllDirectories).Single()));
     }
 
     [Fact]

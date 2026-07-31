@@ -2,7 +2,20 @@ using System.Globalization;
 
 namespace FolderSync;
 
-/// <summary>One timestamped set of files that a mirror moved aside instead of deleting.</summary>
+/// <summary>Why a file ended up in the recycle folder, which decides what restoring it means.</summary>
+public enum RecycleReason
+{
+    /// <summary>A mirror was about to delete it because the sending side no longer has it.</summary>
+    Deleted,
+
+    /// <summary>
+    /// A two-way pair was about to overwrite it with a newer copy from the other side. The file still
+    /// exists — this is the version it used to have.
+    /// </summary>
+    Replaced,
+}
+
+/// <summary>One timestamped set of files that a sync moved aside instead of destroying.</summary>
 public sealed class RecycleBatch
 {
     public string DestinationName { get; init; } = "";
@@ -15,6 +28,21 @@ public sealed class RecycleBatch
     public DateTime When { get; init; }
     public int FileCount { get; init; }
     public long TotalBytes { get; init; }
+
+    public RecycleReason Reason { get; init; } = RecycleReason.Deleted;
+
+    /// <summary>What happened to these files, for the list.</summary>
+    public string ReasonText => Reason == RecycleReason.Replaced ? "Replaced by a newer copy" : "Deleted by mirror";
+
+    /// <summary>
+    /// What restoring would actually do. Spelled out because the two cases differ in kind: bringing
+    /// back a deleted file recovers it, while bringing back a replaced one discards the newer version
+    /// the sync just brought in.
+    /// </summary>
+    public string RestoreMeaning => Reason == RecycleReason.Replaced
+        ? "These files still exist — this is the version they had before a newer copy replaced them. "
+          + "Restoring rolls them back and the newer content is lost on the next sync."
+        : "These files were removed because the other side no longer had them. Restoring puts them back.";
 
     public string WhenText => When == default
         ? System.IO.Path.GetFileName(Path)
@@ -96,13 +124,15 @@ public static class RecycleStore
                 }
                 catch { /* report what we can */ }
 
+                string folderName = Path.GetFileName(dir);
                 batches.Add(new RecycleBatch
                 {
                     DestinationName = place.name,
                     DestinationPath = place.folder,
                     RestoreTo = place.restoreTo,
                     Path = dir,
-                    When = ParseBatchTimestamp(Path.GetFileName(dir)),
+                    When = ParseBatchTimestamp(folderName),
+                    Reason = ReasonOf(folderName),
                     FileCount = count,
                     TotalBytes = bytes,
                 });
@@ -112,10 +142,36 @@ public static class RecycleStore
         return batches.OrderByDescending(b => b.When).ThenBy(b => b.DestinationName).ToList();
     }
 
-    /// <summary>Batch folders are named yyyyMMdd-HHmmss; returns default if that doesn't parse.</summary>
-    public static DateTime ParseBatchTimestamp(string folderName) =>
-        DateTime.TryParseExact(folderName, "yyyyMMdd-HHmmss", CultureInfo.InvariantCulture,
+    /// <summary>
+    /// Marks a batch as holding replaced versions rather than deletions. A folder-name suffix rather
+    /// than a side-file, so the distinction is visible in Explorer too.
+    /// </summary>
+    public const string ReplacedSuffix = "-replaced";
+
+    /// <summary>Batch folders are named yyyyMMdd-HHmmss, optionally with a suffix.</summary>
+    public static DateTime ParseBatchTimestamp(string folderName)
+    {
+        string stamp = StripSuffix(folderName);
+        return DateTime.TryParseExact(stamp, "yyyyMMdd-HHmmss", CultureInfo.InvariantCulture,
             DateTimeStyles.None, out var dt) ? dt : default;
+    }
+
+    /// <summary>
+    /// What a batch holds, from its folder name. Batches written before replaced versions existed have
+    /// no suffix and are deletions, which is the correct reading of them.
+    /// </summary>
+    public static RecycleReason ReasonOf(string folderName) =>
+        (folderName ?? "").EndsWith(ReplacedSuffix, StringComparison.OrdinalIgnoreCase)
+            ? RecycleReason.Replaced
+            : RecycleReason.Deleted;
+
+    private static string StripSuffix(string folderName)
+    {
+        folderName ??= "";
+        return folderName.EndsWith(ReplacedSuffix, StringComparison.OrdinalIgnoreCase)
+            ? folderName[..^ReplacedSuffix.Length]
+            : folderName;
+    }
 
     /// <summary>Every file inside a batch, with paths relative to the batch root.</summary>
     public static List<RecycledFile> GetFiles(RecycleBatch batch) => GetFiles(batch.Path);

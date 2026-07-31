@@ -791,6 +791,7 @@ public partial class MainWindow : Window
         if (BatchGrid.SelectedItem is not RecycleBatch batch)
         {
             RecycledFileGrid.ItemsSource = null;
+            RestoreMeaningText.Text = "";
             UpdateRestoreButtons();
             return;
         }
@@ -798,6 +799,11 @@ public partial class MainWindow : Window
         var files = RecycleStore.GetFiles(batch);
         RecycledFileGrid.ItemsSource = files;
         RecycledFilesTitle.Text = $"Files in {batch.WhenText} ({batch.DestinationName}) — {files.Count}";
+
+        RestoreMeaningText.Text = batch.RestoreMeaning;
+        RestoreMeaningText.Foreground = (System.Windows.Media.Brush)FindResource(
+            batch.Reason == RecycleReason.Replaced ? "Warn" : "FgMuted");
+
         UpdateRestoreButtons();
     }
 
@@ -839,9 +845,15 @@ public partial class MainWindow : Window
         }
 
         // Explicit button labels beat Yes/No here: "No" meaning "overwrite" would be a trap.
+        // A replaced file still exists on both sides; putting the old copy back is a rollback, not a
+        // recovery, and the next sync will carry that rollback across. Say so before doing it.
+        string caution = batch.Reason == RecycleReason.Replaced
+            ? "\n\nThese are previous versions of files that still exist. Restoring rolls them back, "
+              + "and the newer content will be replaced on the next sync."
+            : "\n\nThe next sync will copy them back across the pair.";
+
         var choice = MessageWindow.Choose(this, "Restore files",
-            $"Restore {files.Count} file(s) into:\n\n{restoreTo}\n\n"
-            + "The next sync will copy them back across the pair.",
+            $"Restore {files.Count} file(s) into:\n\n{restoreTo}{caution}",
             primary: "Skip existing", secondary: "Overwrite existing");
         if (choice == DialogChoice.Cancel) return;
 
