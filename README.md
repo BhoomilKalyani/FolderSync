@@ -121,8 +121,8 @@ small folder. Set `"GuardLargeDeletions": false` to switch it off.
 ### Two-way conflicts
 
 When the same file has changed on both sides of a two-way pair, the newer copy wins — and the copy it
-replaces is **kept in the recycle folder** rather than being overwritten and lost. The log says how
-many files this happened to.
+replaces is **kept in the recycle folder** rather than being overwritten and lost, in its own
+`-replaced` batch so it is never mistaken for a deletion. The log says how many files this happened to.
 
 Note the honest limitation: without a record of the previous run, a genuine conflict cannot be told
 apart from an ordinary update, so *every* replaced file is kept. Set
@@ -144,8 +144,19 @@ from the other side:
 <destination>\_FolderSyncTrash\<yyyyMMdd-HHmmss>\<original relative path>
 ```
 
+There are two kinds of batch, and the **Why** column says which:
+
+| Folder name | Holds | What restoring does |
+|---|---|---|
+| `20260731-143022` | Files a mirror was about to **delete** | Brings them back — a recovery |
+| `20260731-143022-replaced` | The version a file had before a newer copy **replaced** it | Rolls it back, discarding the newer content on the next sync |
+
+That distinction matters: a replaced file still exists on both sides, so putting the old copy back is
+undoing a merge rather than recovering something lost. The page spells this out for whichever batch
+you select, and the restore prompt repeats it.
+
 The **Recycled files** page lists these batches, shows what is inside, and restores files back into
-the source folder — the next sync then copies them out to every destination again. That folder is
+the folder they came from — the next sync then carries that across the pair. The recycle folder is
 never mirrored (otherwise it would be purged itself) and batches older than
 `RecycleRetentionDays` (default **30**) are removed automatically. Set
 `"RecycleDeletedFiles": false` to make deletions permanent instead.
@@ -209,7 +220,8 @@ Common causes:
 
 | Symptom | Cause |
 |---|---|
-| A destination is skipped | Its drive isn't mounted — the cloud client isn't running. |
+| A pair says **Skipped — drive not connected** | Exactly that: the USB or network drive isn't attached. Not an error, and no email is sent for it. |
+| A mirror **stopped** without deleting anything | The large-deletion guard: the sending folder is probably wrong or not fully available. Check it and sync again. |
 | Schedule shows enabled but never runs | It points at a program file that has moved. The app offers a one-click repair on startup. |
 | Nothing syncs at startup | Windows only fires a *logon* trigger on a real sign-in; add the **unlock** trigger. |
 | Email fails with `5.7.9` | You used your account password instead of an App Password. |
@@ -367,6 +379,14 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
   and no longer emails one — just because a USB or network backup drive isn't connected.
 - **Per-pair status.** The pairs list shows each pair's last result and how long ago, so a pair that
   has been quietly failing for a week is visible immediately.
+- **Fixed: summary emails reported the wrong thing.** Since 1.1.0 they showed a blank source and
+  "Additive" regardless of the actual pairs, because they still read the pre-pairs `Source` and
+  `Mirror` fields that the migration clears. They now report each pair's outcome and reason from the
+  run itself, with totals for copied, failed, deletions kept and previous versions kept — and a pair
+  that was skipped is tagged `SKIP` rather than `OK`, so an unplugged drive can never read as a
+  completed backup.
+- **Fixed: replaced versions were filed as deletions.** They now go to their own `-replaced` batch,
+  and the Recycled files page explains what restoring each kind actually does.
 
 ### 1.1.1
 
