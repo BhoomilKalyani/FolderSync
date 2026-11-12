@@ -62,6 +62,17 @@ internal static class Program
     /// </summary>
     private static int RunGui()
     {
+        // One window per user session. A second copy meant two tray icons and two windows each saving
+        // config.json over the other's changes. Held until the process exits.
+        using var instance = new Mutex(initiallyOwned: true, @"Local\FolderSync.Window", out bool firstCopy);
+        if (!firstCopy)
+        {
+            System.Windows.MessageBox.Show(
+                "Folder Sync is already running. Look for its icon in the notification area, next to the clock.",
+                "Folder Sync", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+            return 0;
+        }
+
         // WinForms is still initialised: the tray icon and folder picker come from it.
         System.Windows.Forms.Application.EnableVisualStyles();
         System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
@@ -92,7 +103,20 @@ internal static class Program
         });
         ThemeManager.Apply(AppTheme.System);
 
-        var window = new MainWindow();
+        MainWindow window;
+        try
+        {
+            window = new MainWindow();
+        }
+        catch (ConfigUnavailableException ex)
+        {
+            // Opening on defaults here would let the next save overwrite the user's real settings.
+            AppendEvent("[Config] window not opened: " + ex.Message);
+            System.Windows.MessageBox.Show(
+                ex.Message + "\n\nAnother program may be using it. Close that program and start Folder Sync again.",
+                "Folder Sync", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return 1;
+        }
         app.MainWindow = window;
         return app.Run(window);
     }
@@ -104,7 +128,21 @@ internal static class Program
     /// </param>
     private static int RunHeadless(bool auto = false)
     {
-        var config = SyncConfig.Load();
+        SyncConfig config;
+        try
+        {
+            config = SyncConfig.Load();
+        }
+        catch (ConfigUnavailableException ex)
+        {
+            // The settings exist but could not be opened. Running on defaults would sync nothing and
+            // report success, so fail instead, and leave the file exactly as it is.
+            return FailBeforeSync($"{ex.Message}\nNothing was synced, and the settings file was left untouched.");
+        }
+
+        if (config.LoadProblem is { } problem)
+            return FailBeforeSync($"{problem}\nNothing was synced. Restore the kept copy, or set the folder "
+                                + "pairs up again in the Folder Sync window.");
 
         if (auto && config.MinMinutesBetweenAutoSyncs > 0)
         {
@@ -122,25 +160,37 @@ internal static class Program
         }
 
         var logPath = SyncConfig.NewSyncLogPath();   // unique file per sync, never appended to an old one
-        var sb = new StringBuilder();
 
+        // Written line by line as the sync goes, not all at once at the end: Task Scheduler stops a run
+        // that passes its 2-hour limit, and a log held in memory until then was simply lost - exactly
+        // the run whose log is most needed.
+        var log = SyncLog.Open(logPath);
         var engine = new SyncEngine(config);
-        engine.Log += line => sb.AppendLine(line);
+        engine.Log += log.WriteLine;
 
         SyncResult result;
         bool fatal = false;
         try
         {
-            result = engine.RunAsync().GetAwaiter().GetResult();
+            // One sync at a time across every copy of the app. Another run (the window, or a second
+            // trigger firing at the same moment) is left to finish; this one has nothing to add.
+            result = SyncLock.Run(() => engine.RunAsync().GetAwaiter().GetResult(), TimeSpan.Zero);
+        }
+        catch (SyncAlreadyRunningException)
+        {
+            log.Dispose();
+            try { File.Delete(logPath); } catch { }
+            AppendEvent("[Sync] skipped - another sync was already running.");
+            return 0;
         }
         catch (Exception ex)
         {
-            sb.AppendLine("FATAL: " + ex);
+            log.WriteLine("FATAL: " + ex);
             result = new SyncResult { Success = false };
             fatal = true;
         }
 
-        try { File.WriteAllText(logPath, sb.ToString()); } catch { }
+        log.Dispose();                                // complete before it is attached to the email
         LastRun.Save(result);                         // so the window can show a summary
         PairHistory.Record(result);                   // so the grid shows each pair's last outcome
         SyncConfig.RecordSyncTime();                  // feeds the --auto minimum-gap throttle
@@ -148,6 +198,18 @@ internal static class Program
         TrySendEmail(config, result, logPath);
 
         return (result.Success && !fatal) ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Records a scheduled run that could not start, so the failure shows in the log folder, the events
+    /// log and the window's last-sync card rather than vanishing. Returns the failing exit code.
+    /// </summary>
+    private static int FailBeforeSync(string why)
+    {
+        AppendEvent("[Sync] not run: " + why.Replace('\n', ' '));
+        try { File.WriteAllText(SyncConfig.NewSyncLogPath(), "FATAL: " + why + Environment.NewLine); } catch { }
+        LastRun.Save(new SyncResult { Success = false });
+        return 1;
     }
 
     private static bool Has(string[] args, string flag) =>

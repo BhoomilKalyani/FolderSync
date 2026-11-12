@@ -65,7 +65,6 @@ public partial class MainWindow : Window
         RefreshMountedCloud();
         RefreshPairStatuses();
         BuildScheduleRows();
-        LoadScheduleTimesFromTasks();
         RefreshLastRunSummary();
 
         _tray = CreateTray();
@@ -77,7 +76,18 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
-            WarnAboutStaleTaskTargets();
+            // Started here, not in the constructor: the constructor runs before WPF's message loop has
+            // a synchronisation context, so the code after each background await resumed on a worker
+            // thread and failed touching the controls ("a different thread owns it").
+            RefreshScheduleStates();
+            _ = LoadScheduleTimesFromTasksAsync();
+
+            if (_config.LoadProblem is { } problem)
+                MessageWindow.Warn(this, "Settings could not be read",
+                    problem + "\n\nScheduled syncs will report a failure until the folder pairs are set up "
+                    + "again. The settings folder is listed on the About page.");
+
+            await WarnAboutStaleTaskTargetsAsync();
             if (_config.CheckForUpdates && Updater.IsCheckDue())
                 await CheckForUpdatesAsync(manual: false);
         };
@@ -117,11 +127,13 @@ public partial class MainWindow : Window
                 : $"{deleting.Count} pair(s) mirror and deletions are PERMANENT (recycle is off in config.json).";
     }
 
-    private void SyncPairsToConfig()
-    {
-        _config.Pairs.Clear();
-        _config.Pairs.AddRange(_pairs);
-    }
+    /// <summary>
+    /// Copies the grid's pairs into the config as a new list. Never clear-and-refill in place: the health
+    /// check, the recycled-files scan and a sync all read the config's list on a background thread, and
+    /// changing that list under them throws "Collection was modified". A fresh list leaves any reader
+    /// with the one it started on.
+    /// </summary>
+    private void SyncPairsToConfig() => _config.Pairs = _pairs.ToList();
 
     /// <summary>
     /// Fills in each pair's "Last run" column from the stored per-pair history, so a pair that has
@@ -346,9 +358,20 @@ public partial class MainWindow : Window
         engine.Progress += p => Dispatcher.Invoke(() => Status = p);
 
         SyncResult? result = null;
+        bool busyElsewhere = false;
+        var token = _cts.Token;
         try
         {
-            result = await Task.Run(() => engine.RunAsync(_cts.Token, listOnly));
+            // A real sync takes the cross-process lock, so it cannot overlap a scheduled run over the
+            // same folders. Preview changes nothing and needs no lock.
+            result = listOnly
+                ? await Task.Run(() => engine.RunAsync(token, listOnly: true))
+                : await Task.Run(() => SyncLock.Run(
+                      () => engine.RunAsync(token).GetAwaiter().GetResult(), TimeSpan.Zero));
+        }
+        catch (SyncAlreadyRunningException)
+        {
+            busyElsewhere = true;      // nothing ran, so there is no log or result to record
         }
         catch (OperationCanceledException)
         {
@@ -365,6 +388,12 @@ public partial class MainWindow : Window
             SetBusy(false);
             _cts.Dispose();
             _cts = null;
+        }
+
+        if (busyElsewhere)
+        {
+            Status = "A scheduled sync is running right now — try again when it has finished.";
+            return;
         }
 
         if (listOnly)
@@ -412,6 +441,7 @@ public partial class MainWindow : Window
     {
         SyncButton.IsEnabled = !busy;
         PreviewButton.IsEnabled = !busy;
+        HealthButton.IsEnabled = !busy && !_healthRunning;
         CancelButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         Progress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -426,34 +456,40 @@ public partial class MainWindow : Window
             return;
         }
 
-        var age = DateTime.Now - last.When;
-        string ago = age.TotalDays >= 1 ? $"{age.TotalDays:0.#} day(s) ago"
-                   : age.TotalHours >= 1 ? $"{age.TotalHours:0.#} hour(s) ago"
-                   : $"{age.TotalMinutes:0} min ago";
-
-        LastRunText.Text = $"{(last.Success ? "Succeeded" : "Completed with errors")} — {last.When:yyyy-MM-dd HH:mm:ss} ({ago})";
+        // The shared formatter, so this card, the pairs grid and the health check describe a run alike.
+        LastRunText.Text = $"{(last.Success ? "Succeeded" : "Completed with errors")} — "
+                         + $"{last.When:yyyy-MM-dd HH:mm:ss} ({Humanise.Ago(last.When)})";
         LastRunText.Foreground = (System.Windows.Media.Brush)FindResource(last.Success ? "Ok" : "Bad");
         LastRunGrid.ItemsSource = last.Destinations;
         LastRunGrid.Visibility = last.Destinations.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private bool _healthRunning;
+
     private async void Health_Click(object sender, RoutedEventArgs e)
     {
+        if (_cts is not null || _healthRunning) return;   // a sync or another check is running
         SaveConfig();
 
         // The report launches half a dozen schtasks processes and walks every folder pair, which is
         // long enough to freeze the window if it runs on the UI thread.
-        var button = sender as Button;
-        if (button is not null) button.IsEnabled = false;
-        Status = "Checking…";
+        _healthRunning = true;
+        HealthButton.IsEnabled = false;
+
+        // The status line belongs to the sync: put back whatever it said ("Completed with errors…")
+        // rather than replacing it with "Ready.". Only if nothing else has written to it meanwhile.
+        const string checking = "Checking…";
+        string before = StatusText.Text;
+        Status = checking;
 
         string report;
         try { report = await Task.Run(() => Diagnostics.Run(_config)); }
         catch (Exception ex) { report = "Health check failed: " + ex; }
         finally
         {
-            if (button is not null) button.IsEnabled = true;
-            Status = "Ready.";
+            _healthRunning = false;
+            HealthButton.IsEnabled = _cts is null;
+            if (StatusText.Text == checking) Status = before;
         }
 
         new TextWindow("Health check", "Folder Sync health check", report) { Owner = this }.ShowDialog();
@@ -487,8 +523,7 @@ public partial class MainWindow : Window
         ScheduleRows.Children.Add(MakeScheduleRow("Monthly", ScheduleManager.MonthlyTask, monthly));
 
         ScheduleRows.Children.Add(MakeScheduleRow("Logon / unlock", ScheduleManager.LogonTask, null));
-
-        RefreshScheduleStates();
+        // States are filled in once the window has loaded; see the Loaded handler.
     }
 
     /// <summary>"at [hh] : [mm]" — pickers rather than a text box, so only valid times exist.</summary>
@@ -530,9 +565,11 @@ public partial class MainWindow : Window
         row.Children.Add(name);
 
         var buttons = new StackPanel { Orientation = Orientation.Horizontal, VerticalAlignment = VerticalAlignment.Center };
-        var enable = new Button { Content = "Enable" };
-        var disable = new Button { Content = "Disable" };
-        var remove = new Button { Content = "Remove" };
+        // Disabled until the task's state has been read (in the background), so nothing can be clicked
+        // against a state that is not known yet.
+        var enable = new Button { Content = "Enable", IsEnabled = false };
+        var disable = new Button { Content = "Disable", IsEnabled = false };
+        var remove = new Button { Content = "Remove", IsEnabled = false };
         enable.Click += (_, _) => ApplySchedule(() => EnableSchedule(task), $"{label}: enable");
         disable.Click += (_, _) => ApplySchedule(() => ScheduleManager.SetEnabled(task, false), $"{label}: disable");
         remove.Click += (_, _) => ApplySchedule(() => ScheduleManager.Remove(task), $"{label}: remove");
@@ -551,6 +588,7 @@ public partial class MainWindow : Window
 
         var state = new TextBlock
         {
+            Text = "checking…",
             Margin = new Thickness(14, 0, 0, 0),
             Style = (Style)FindResource("Subtle"),
             VerticalAlignment = VerticalAlignment.Center,
@@ -581,15 +619,26 @@ public partial class MainWindow : Window
     private static int Picked(ComboBox combo, int fallback) =>
         combo.SelectedItem is string s && int.TryParse(s, out int v) ? v : fallback;
 
-    /// <summary>Shows the time a registered task actually runs at, rather than a stale default.</summary>
-    private void LoadScheduleTimesFromTasks()
+    /// <summary>
+    /// Shows the time a registered task actually runs at, rather than a stale default. Queried off the
+    /// UI thread; never throws, since the caller discards the task.
+    /// </summary>
+    private async Task LoadScheduleTimesFromTasksAsync()
     {
-        var daily = ScheduleManager.GetCalendarSchedule(ScheduleManager.DailyTask);
-        if (daily.time is { } dt) SelectTime(_dailyHour, _dailyMinute, dt);
+        try
+        {
+            var (daily, monthly) = await Task.Run(() => (
+                ScheduleManager.GetCalendarSchedule(ScheduleManager.DailyTask),
+                ScheduleManager.GetCalendarSchedule(ScheduleManager.MonthlyTask)));
 
-        var monthly = ScheduleManager.GetCalendarSchedule(ScheduleManager.MonthlyTask);
-        if (monthly.time is { } mt) SelectTime(_monthlyHour, _monthlyMinute, mt);
-        if (monthly.day is { } day) Select(_monthlyDay, day);
+            if (daily.time is { } dt) SelectTime(_dailyHour, _dailyMinute, dt);
+            if (monthly.time is { } mt) SelectTime(_monthlyHour, _monthlyMinute, mt);
+            if (monthly.day is { } day) Select(_monthlyDay, day);
+        }
+        catch (Exception ex)
+        {
+            AppendEvent("[Schedule] could not read the schedule times: " + ex.Message);
+        }
     }
 
     private static void SelectTime(ComboBox hour, ComboBox minute, TimeOnly time)
@@ -621,12 +670,33 @@ public partial class MainWindow : Window
         RefreshScheduleStates();
     }
 
-    /// <summary>Greys out buttons that don't apply and shows each trigger's state.</summary>
-    private void RefreshScheduleStates()
+    /// <summary>
+    /// Greys out buttons that don't apply and shows each trigger's state. Each state is a schtasks
+    /// process, so they are queried off the UI thread: at startup these queries (with the schedule times
+    /// and the stale-target check) launched up to eleven processes one after another and held the window.
+    /// Never throws - callers discard the task.
+    /// </summary>
+    private void RefreshScheduleStates() => _ = RefreshScheduleStatesAsync();
+
+    private async Task RefreshScheduleStatesAsync()
     {
-        foreach (var row in _rows)
+        var rows = _rows.ToList();
+        List<ScheduleManager.TaskState> states;
+        try
         {
-            var st = ScheduleManager.GetState(row.Task);
+            states = await Task.Run(() => rows.Select(r => ScheduleManager.GetState(r.Task)).ToList());
+        }
+        catch (Exception ex)
+        {
+            AppendEvent("[Schedule] could not read the schedules: " + ex.Message);
+            foreach (var row in rows) row.State.Text = "could not be read";
+            return;
+        }
+
+        for (int i = 0; i < rows.Count; i++)
+        {
+            var row = rows[i];
+            var st = states[i];
             row.Enable.IsEnabled = st != ScheduleManager.TaskState.Enabled;
             row.Disable.IsEnabled = st == ScheduleManager.TaskState.Enabled;
             row.Remove.IsEnabled = st != ScheduleManager.TaskState.NotInstalled;
@@ -651,14 +721,29 @@ public partial class MainWindow : Window
             primary: "Create anyway", tone: DialogTone.Warning);
     }
 
-    private void WarnAboutStaleTaskTargets()
+    private async Task WarnAboutStaleTaskTargetsAsync()
     {
-        var stale = new List<(string task, string label, string exe)>();
-        foreach (var (task, label) in _scheduleTasks)
+        var tasks = _scheduleTasks;
+        List<(string task, string label, string exe)> stale;
+        try
         {
-            if (!ScheduleManager.Exists(task)) continue;
-            var exe = ScheduleManager.GetTaskExe(task);
-            if (!string.IsNullOrEmpty(exe) && !File.Exists(exe)) stale.Add((task, label, exe));
+            // Six schtasks processes at most: off the UI thread, so the window is usable meanwhile.
+            stale = await Task.Run(() =>
+            {
+                var found = new List<(string task, string label, string exe)>();
+                foreach (var (task, label) in tasks)
+                {
+                    if (!ScheduleManager.Exists(task)) continue;
+                    var exe = ScheduleManager.GetTaskExe(task);
+                    if (!string.IsNullOrEmpty(exe) && !File.Exists(exe)) found.Add((task, label, exe));
+                }
+                return found;
+            });
+        }
+        catch (Exception ex)
+        {
+            AppendEvent("[Schedule] could not check the schedules' targets: " + ex.Message);
+            return;
         }
         if (stale.Count == 0) return;
 
@@ -748,18 +833,23 @@ public partial class MainWindow : Window
             OpenPath("https://myaccount.google.com/apppasswords");
     }
 
-    private void SendTest_Click(object sender, RoutedEventArgs e)
+    private async void SendTest_Click(object sender, RoutedEventArgs e)
     {
         SaveEmail();
         var em = _config.Email;
         if (!em.HasPassword) { EmailStatus.Text = "Enter the app password first."; return; }
 
+        // Connecting, signing in and sending can take many seconds (or a long timeout when the server is
+        // unreachable), which froze the whole window while it ran on the UI thread.
+        var button = sender as Button;
+        if (button is not null) button.IsEnabled = false;
         EmailStatus.Text = "Sending…";
+        string subject = "[Folder Sync] Test email";
+        string body = $"This is a test from Folder Sync on {Environment.MachineName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}.\n\n"
+                    + "If you received this, notifications are configured correctly.";
         try
         {
-            Emailer.Send(em, "[Folder Sync] Test email",
-                $"This is a test from Folder Sync on {Environment.MachineName} at {DateTime.Now:yyyy-MM-dd HH:mm:ss}.\n\n"
-                + "If you received this, notifications are configured correctly.");
+            await Task.Run(() => Emailer.Send(em, subject, body));
             EmailStatus.Text = "Test email sent.";
             AppendEvent($"[Email] test sent to {em.To}.");
         }
@@ -780,6 +870,10 @@ public partial class MainWindow : Window
             }
             MessageWindow.Warn(this, "Test email failed", msg);
         }
+        finally
+        {
+            if (button is not null) button.IsEnabled = true;
+        }
     }
 
     // ===================== Recycled files =====================
@@ -788,28 +882,59 @@ public partial class MainWindow : Window
 
     private void LoadRecycled() => _ = LoadRecycledAsync();
 
+    /// <summary>Numbers each scan, so only the newest one's result is ever shown.</summary>
+    private int _recycleScan;
+
     /// <summary>
     /// Lists the recycled batches. The scan walks every file of every batch on both sides of every
     /// pair to total up counts and sizes, which is slow enough to stall the window after a month of
     /// retained batches — so it runs off the UI thread.
+    ///
+    /// <para>Scans can overlap (Refresh, opening the page, deleting a batch), and they finish in any
+    /// order, so a result is applied only if no newer scan has started since: otherwise an older scan
+    /// that still listed a just-deleted batch could finish last and bring it back. The old list is
+    /// cleared while scanning, so nothing stale can be restored or deleted in the meantime.</para>
+    ///
+    /// <para>Never throws: callers discard the returned task, so an exception escaping here would be
+    /// lost without a trace and leave the page stuck on "Looking…".</para>
     /// </summary>
     private async Task LoadRecycledAsync()
     {
-        SaveConfig();
+        int scan = ++_recycleScan;
+        RefreshRecycledButton.IsEnabled = false;
 
-        RecycledFileGrid.ItemsSource = null;
-        RecycledFilesTitle.Text = "Files";
-        RestoreMeaningText.Text = "";
-        RestoreStatus.Text = "Looking…";
+        try
+        {
+            SaveConfig();
 
-        var config = _config;
-        _batches = await Task.Run(() => RecycleStore.GetBatches(config));
+            BatchGrid.ItemsSource = null;          // clears the selection, which resets the file list
+            RecycledFileGrid.ItemsSource = null;
+            RecycledFilesTitle.Text = "Files";
+            RestoreMeaningText.Text = "";
+            RestoreStatus.Text = "Looking…";
+            UpdateRestoreButtons();
 
-        BatchGrid.ItemsSource = _batches;
-        RestoreStatus.Text = _batches.Count == 0
-            ? "Nothing has been recycled. Files appear here when a sync would otherwise delete or replace them."
-            : $"{_batches.Count} batch(es) found.";
-        UpdateRestoreButtons();
+            var config = _config;
+            var batches = await Task.Run(() => RecycleStore.GetBatches(config));
+            if (scan != _recycleScan) return;       // a newer scan has started; its result is the one to show
+
+            _batches = batches;
+            BatchGrid.ItemsSource = _batches;
+            RestoreStatus.Text = _batches.Count == 0
+                ? "Nothing has been recycled. Files appear here when a sync would otherwise delete or replace them."
+                : $"{_batches.Count} batch(es) found.";
+            UpdateRestoreButtons();
+        }
+        catch (Exception ex)
+        {
+            if (scan != _recycleScan) return;
+            AppendEvent("[Recycle] could not list recycled files: " + ex);
+            RestoreStatus.Text = "Could not list the recycled files: " + ex.Message;
+        }
+        finally
+        {
+            if (scan == _recycleScan) RefreshRecycledButton.IsEnabled = true;
+        }
     }
 
     private void BatchGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -817,6 +942,7 @@ public partial class MainWindow : Window
         if (BatchGrid.SelectedItem is not RecycleBatch batch)
         {
             RecycledFileGrid.ItemsSource = null;
+            RecycledFilesTitle.Text = "Files";
             RestoreMeaningText.Text = "";
             UpdateRestoreButtons();
             return;

@@ -31,6 +31,9 @@ public static class DeletionGuard
     {
         reason = "";
 
+        // Outside 1-100 the guard either trips on everything or can never fire.
+        percent = Math.Clamp(percent, 1, 100);
+
         if (filesToDelete <= 0) return false;
         if (filesToDelete < Math.Max(1, minimumFiles)) return false;
         if (filesAtDestination <= 0) return false;
@@ -44,12 +47,18 @@ public static class DeletionGuard
         return true;
     }
 
+    /// <summary>Returned by <see cref="CountFiles"/> when the folder could not be read at all.</summary>
+    public const int Uncountable = -1;
+
     /// <summary>
     /// Files currently under <paramref name="folder"/>, ignoring the recycle folder so previously
-    /// rescued files never count towards the total.
+    /// rescued files never count towards the total. 0 when the folder does not exist.
     ///
-    /// Returns 0 when the folder cannot be read, which makes the guard stand down rather than block a
-    /// sync over a permissions problem it cannot see past.
+    /// <para>A sub-folder that cannot be read is skipped and the rest are still counted. This used to
+    /// give up on the first one and report 0, and 0 makes the guard stand down - so one locked folder
+    /// anywhere at the destination (a Documents folder always has some) switched the guard off without
+    /// a word. When the folder itself cannot be read this returns <see cref="Uncountable"/>, and the
+    /// engine stops rather than deleting blind.</para>
     /// </summary>
     public static int CountFiles(string folder, string recycleFolderName)
     {
@@ -57,15 +66,28 @@ public static class DeletionGuard
         {
             if (!Directory.Exists(folder)) return 0;
 
+            // With IgnoreInaccessible set, an unreadable root just yields nothing, which would read as
+            // "empty". Opening it once without that option tells the two apart.
+            using (var probe = Directory.EnumerateFileSystemEntries(folder).GetEnumerator())
+                probe.MoveNext();
+
+            var options = new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                IgnoreInaccessible = true,
+                AttributesToSkip = 0,          // hidden and system files are just as much at risk
+                MatchType = MatchType.Win32,
+            };
+
             int count = 0;
-            foreach (var file in Directory.EnumerateFiles(folder, "*", SearchOption.AllDirectories))
+            foreach (var file in Directory.EnumerateFiles(folder, "*", options))
             {
                 if (IsInside(file, folder, recycleFolderName)) continue;
                 count++;
             }
             return count;
         }
-        catch { return 0; }
+        catch { return Uncountable; }
     }
 
     /// <summary>True when a path sits under a folder named <paramref name="segment"/>.</summary>

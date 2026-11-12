@@ -178,7 +178,7 @@
                                         Content="Sync now" Click="Sync_Click"/>
                                 <Button x:Name="PreviewButton" Content="Preview" Click="Preview_Click"/>
                                 <Button x:Name="CancelButton" Content="Cancel" Visibility="Collapsed" Click="Cancel_Click"/>
-                                <Button Content="Check health" Click="Health_Click"/>
+                                <Button x:Name="HealthButton" Content="Check health" Click="Health_Click"/>
                                 <Button Content="Open logs" Style="{StaticResource LinkButton}" Click="OpenLogs_Click"/>
                             </StackPanel>
                             <ProgressBar x:Name="Progress" Margin="0,16,0,0" IsIndeterminate="True" Visibility="Collapsed"/>
@@ -316,7 +316,7 @@
                         <StackPanel>
                             <StackPanel Orientation="Horizontal" Margin="0,0,0,12">
                                 <TextBlock Text="Batches" Style="{StaticResource CardTitle}" Margin="0,0,12,0"/>
-                                <Button Content="Refresh" Style="{StaticResource LinkButton}" Click="RefreshRecycled_Click"/>
+                                <Button x:Name="RefreshRecycledButton" Content="Refresh" Style="{StaticResource LinkButton}" Click="RefreshRecycled_Click"/>
                             </StackPanel>
                             <DataGrid x:Name="BatchGrid" MinHeight="110" MaxHeight="200" IsReadOnly="True"
                                       SelectionChanged="BatchGrid_SelectionChanged">

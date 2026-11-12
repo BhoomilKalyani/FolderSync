@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net10.0-windows</TargetFramework>
     <Nullable>enable</Nullable>
     <!-- Nullability mistakes become build errors: a "possible null dereference" here is a real
          crash waiting to happen, and warnings are easy to scroll past. -->
@@ -33,7 +33,6 @@
 
   <ItemGroup>
     <PackageReference Include="MailKit" Version="4.17.0" />
-    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="10.0.9" />
   </ItemGroup>
 
   <ItemGroup>

@@ -203,6 +203,172 @@ public class SafetyIntegrationTests : IDisposable
         Assert.True(File.Exists(Path.Combine(left, "fromright.txt")));
     }
 
+    // ---------- names robocopy's console output cannot represent ----------
+
+    [Theory]
+    [InlineData("caf\u00e9.txt")]              // representable in the OEM code page, but not as UTF-8
+    [InlineData("\u65e5\u672c.txt")]          // not representable in the OEM code page at all
+    [InlineData("na\u00efve r\u00e9sum\u00e9.docx")]
+    public async Task A_file_with_a_non_ascii_name_is_recycled_rather_than_deleted(string name)
+    {
+        // The listing was decoded as UTF-8 while robocopy wrote the OEM code page, so the path came back
+        // mangled, "did not exist", was skipped when moving files aside - and /MIR then deleted it.
+        var (left, right) = Folders();
+        SameFiles(left, right, 60);
+        File.WriteAllText(Path.Combine(right, name), "precious");
+
+        var config = Config(left, right, mirror: true);
+        var result = await new SyncEngine(config).RunAsync();
+
+        Assert.True(result.Success);
+        Assert.False(File.Exists(Path.Combine(right, name)));
+        var rescued = Directory.GetFiles(Path.Combine(right, config.RecycleFolderName), name, SearchOption.AllDirectories);
+        Assert.Equal("precious", File.ReadAllText(Assert.Single(rescued)));
+        Assert.Equal(1, result.Targets[0].FilesRecycled);
+    }
+
+    [Fact]
+    public async Task Something_that_cannot_be_moved_aside_is_left_in_place_not_deleted()
+    {
+        // With recycling on, the copy pass no longer purges: whatever could not be moved aside stays,
+        // and the pair reports it. Here the recycle folder itself cannot be created.
+        var (left, right) = Folders();
+        SameFiles(left, right, 60);
+        File.WriteAllText(Path.Combine(right, "extra.txt"), "keep me");
+
+        var config = Config(left, right, mirror: true);
+        SyncResult result;
+        using (DenyOnFolder(right, System.Security.AccessControl.FileSystemRights.CreateDirectories))
+            result = await new SyncEngine(config).RunAsync();
+
+        Assert.False(result.Success);
+        Assert.Contains("could not be moved aside", result.Targets[0].Note);
+        Assert.Equal("keep me", File.ReadAllText(Path.Combine(right, "extra.txt")));
+    }
+
+    // ---------- two-way: every overwrite keeps the previous version ----------
+
+    [Fact]
+    public async Task A_same_time_different_size_file_keeps_the_version_it_replaced()
+    {
+        // robocopy calls this "Changed", not "Newer", and only "Newer" was backed up - so this version
+        // was overwritten with nothing kept.
+        var (left, right) = Folders();
+        File.WriteAllText(Path.Combine(left, "doc.txt"), "the version on the left, longer");
+        File.WriteAllText(Path.Combine(right, "doc.txt"), "the version on the right");
+        var stamp = DateTime.Now.AddHours(-3);
+        File.SetLastWriteTime(Path.Combine(left, "doc.txt"), stamp);
+        File.SetLastWriteTime(Path.Combine(right, "doc.txt"), stamp);
+
+        var config = Config(left, right, mirror: false);
+        config.Pairs[0].Direction = SyncDirection.TwoWay;
+        var result = await new SyncEngine(config).RunAsync();
+
+        Assert.True(result.Success);
+        Assert.Equal(1, result.Targets[0].FilesBackedUp);
+        var kept = Directory.GetFiles(Path.Combine(right, config.RecycleFolderName), "doc.txt", SearchOption.AllDirectories);
+        Assert.Equal("the version on the right", File.ReadAllText(Assert.Single(kept)));
+    }
+
+    [Fact]
+    public async Task Two_way_does_not_copy_one_sides_recycled_files_into_the_other()
+    {
+        var (left, right) = Folders();
+        var config = Config(left, right, mirror: false);
+        config.Pairs[0].Direction = SyncDirection.TwoWay;
+        string batch = Path.Combine(left, config.RecycleFolderName, "20261101-120000-replaced");
+        Directory.CreateDirectory(batch);
+        File.WriteAllText(Path.Combine(batch, "old.txt"), "left's old version");
+        File.WriteAllText(Path.Combine(left, "a.txt"), "a");
+
+        var result = await new SyncEngine(config).RunAsync();
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(Path.Combine(right, "a.txt")));
+        Assert.False(Directory.Exists(Path.Combine(right, config.RecycleFolderName)));
+    }
+
+    // ---------- pruning ----------
+
+    [Fact]
+    public async Task Two_way_batches_past_their_retention_are_pruned()
+    {
+        // Pruning only ran after mirror passes, and a two-way pair never mirrors - so its previous
+        // versions, one batch per sync with a change, piled up for ever.
+        var (left, right) = Folders();
+        File.WriteAllText(Path.Combine(left, "a.txt"), "a");
+        var config = Config(left, right, mirror: false);
+        config.Pairs[0].Direction = SyncDirection.TwoWay;
+
+        string trash = Path.Combine(right, config.RecycleFolderName);
+        string old = Batch(trash, DateTime.Now.AddDays(-(config.RecycleRetentionDays + 5)), RecycleStore.ReplacedSuffix);
+        string recent = Batch(trash, DateTime.Now.AddDays(-1), RecycleStore.ReplacedSuffix);
+
+        var result = await new SyncEngine(config).RunAsync();
+
+        Assert.True(result.Success);
+        Assert.False(Directory.Exists(old));
+        Assert.True(Directory.Exists(recent));
+    }
+
+    [Fact]
+    public async Task Pruning_never_deletes_a_folder_it_did_not_create()
+    {
+        // Age used to be read from the folder's creation time and every folder qualified. Only
+        // timestamp-named batches are candidates now, dated by their name.
+        var (left, right) = Folders();
+        SameFiles(left, right, 3);
+        var config = Config(left, right, mirror: true);
+
+        string trash = Path.Combine(right, config.RecycleFolderName);
+        string mine = Path.Combine(trash, "my notes");
+        Directory.CreateDirectory(mine);
+        File.WriteAllText(Path.Combine(mine, "n.txt"), "x");
+        Directory.SetCreationTime(mine, DateTime.Now.AddYears(-2));
+
+        await new SyncEngine(config).RunAsync();
+
+        Assert.True(File.Exists(Path.Combine(mine, "n.txt")));
+    }
+
+    [Fact]
+    public async Task A_recycle_folder_name_that_points_outside_the_pair_is_not_used()
+    {
+        // "RecycleFolderName": ".." made the recycle folder the destination's parent, and pruning then
+        // deleted the destination's unrelated siblings.
+        string parent = Path.Combine(_root, "backup");
+        string left = Path.Combine(_root, "left"), right = Path.Combine(parent, "docs");
+        string sibling = Path.Combine(parent, "20250101-000000");     // even one that looks like a batch
+        foreach (var d in new[] { left, right, sibling }) Directory.CreateDirectory(d);
+        File.WriteAllText(Path.Combine(sibling, "holiday.jpg"), "unrelated to any pair");
+        File.WriteAllText(Path.Combine(left, "a.txt"), "a");
+
+        var config = Config(left, right, mirror: true);
+        config.RecycleFolderName = "..";
+        var result = await new SyncEngine(config).RunAsync();
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(Path.Combine(sibling, "holiday.jpg")));
+        Assert.True(File.Exists(Path.Combine(right, "a.txt")));
+    }
+
+    // ---------- paths ending in a backslash ----------
+
+    [Fact]
+    public async Task Folders_written_with_a_trailing_backslash_still_sync()
+    {
+        // "E:\" ended the quoted argument with \", which robocopy reads as a literal quote: the command
+        // was malformed (exit 16) and a pair on a drive root could never sync.
+        var (left, right) = Folders();
+        File.WriteAllText(Path.Combine(left, "a.txt"), "a");
+
+        var config = Config(left + @"\", right + @"\", mirror: false);
+        var result = await new SyncEngine(config).RunAsync();
+
+        Assert.True(result.Success);
+        Assert.True(File.Exists(Path.Combine(right, "a.txt")));
+    }
+
     // ---------- an unmounted drive is not a failure ----------
 
     [Fact]
@@ -266,6 +432,46 @@ public class SafetyIntegrationTests : IDisposable
     }
 
     // ---------- helpers ----------
+
+    private static void SameFiles(string left, string right, int count)
+    {
+        for (int i = 0; i < count; i++)
+        {
+            File.WriteAllText(Path.Combine(left, $"keep{i}.txt"), "same");
+            File.WriteAllText(Path.Combine(right, $"keep{i}.txt"), "same");
+        }
+    }
+
+    private static string Batch(string trash, DateTime when, string suffix = "")
+    {
+        string dir = Path.Combine(trash, when.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture) + suffix);
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "x.txt"), "x");
+        return dir;
+    }
+
+    /// <summary>Denies the current user <paramref name="rights"/> on a folder until disposed.</summary>
+    private static IDisposable DenyOnFolder(string folder, System.Security.AccessControl.FileSystemRights rights)
+    {
+        var info = new DirectoryInfo(folder);
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var rule = new System.Security.AccessControl.FileSystemAccessRule(
+            user, rights, System.Security.AccessControl.AccessControlType.Deny);
+        var acl = info.GetAccessControl();
+        acl.AddAccessRule(rule);
+        info.SetAccessControl(acl);
+        return new Undo(() =>
+        {
+            var restored = info.GetAccessControl();
+            restored.RemoveAccessRule(rule);
+            info.SetAccessControl(restored);
+        });
+    }
+
+    private sealed class Undo(Action undo) : IDisposable
+    {
+        public void Dispose() => undo();
+    }
 
     private (string left, string right) Folders()
     {

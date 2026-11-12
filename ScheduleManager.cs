@@ -45,6 +45,10 @@ public static class ScheduleManager
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            // OEM, not the ANSI default: otherwise "José" in an install path read back as "Jos‚", and
+            // every schedule looked as though it pointed at a missing program.
+            StandardOutputEncoding = ConsoleEncoding.Oem,
+            StandardErrorEncoding = ConsoleEncoding.Oem,
         };
         using var p = Process.Start(psi)!;
 

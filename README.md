@@ -1,4 +1,4 @@
-﻿# Folder Sync
+# Folder Sync
 
 A small Windows app that mirrors one folder into **several destinations at once** — for example
 your Documents folder into your **Google Drive**, **iCloud Drive** and an external backup drive,
@@ -9,7 +9,7 @@ Drive for Desktop each keep a normal **local folder** on your PC that their own 
 cloud. Folder Sync just copies between those local folders, and each cloud client uploads from
 there. That makes it fast and reliable, and it keeps working even if a provider changes its API.
 
-Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer and
+Built with .NET 10 / WPF, using Windows' own **robocopy** for the file transfer and
 **Task Scheduler** for automation.
 
 ---
@@ -53,7 +53,8 @@ Built with .NET 8 / WPF, using Windows' own **robocopy** for the file transfer a
 
 > **SmartScreen:** Setup is not code-signed, so Windows may show *"Windows protected your PC"* the
 > first time. Choose **More info → Run anyway**. (Removing that warning requires a paid
-> code-signing certificate.)
+> code-signing certificate.) Updates installed from inside the app are checked against the SHA-256
+> published with the release before they run.
 
 ---
 
@@ -240,7 +241,9 @@ and starts from defaults rather than overwriting your settings — `events.log` 
 
 The app checks GitHub for a newer release on startup, at most **once a day**. If one exists you get
 a tray notification and an **Update to x.y.z** link; the dialog shows the release notes and an
-**Update Now** button that downloads the installer, runs it, and restarts the app. You can also
+**Update Now** button that downloads the installer, checks it against the SHA-256 published with
+the release, runs it, and restarts the app. An installer that does not match is deleted and never
+run; a release that publishes no checksum is offered as a link to the release page instead. You can also
 check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 > The install path stays the same across versions on purpose. The scheduled tasks store an absolute
@@ -287,15 +290,15 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 ## Building from source
 
-Requires the [.NET 8 SDK](https://dotnet.microsoft.com/download) and, for the installer,
+Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download) and, for the installer,
 [Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
-`global.json` pins the SDK to the 8.x line so local builds match CI.
+`global.json` pins the SDK to the 10.x line so local builds match CI.
 
 ```powershell
 dotnet build FolderSync.sln -c Release                              # compile everything
 dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # run the unit tests
 dotnet run --project FolderSync.csproj                              # run from source
-.\build-installer.ps1                                               # dist\FolderSyncSetup-<version>.exe
+.\build-installer.ps1                                               # dist\FolderSyncSetup-<version>.exe (+ .sha256)
 ```
 
 ### Layout
@@ -307,6 +310,7 @@ dotnet run --project FolderSync.csproj                              # run from s
 | `installer/FolderSync.iss` | Inno Setup script. |
 | `build-installer.ps1` | Publishes self-contained, then compiles the installer. |
 | `.github/workflows` | `ci.yml` builds and tests every push; `release.yml` publishes a release from a tag. |
+| `.github/dependabot.yml` | Weekly update PRs for the NuGet packages, the .NET SDK and the Actions. |
 
 Running from Visual Studio puts the exe in `bin\Debug\…`. Don't enable a schedule from there — it
 would point at a path that disappears on the next rebuild. The app warns you if you try.
@@ -317,11 +321,13 @@ would point at a path that disappears on the next rebuild. The app warns you if 
 2. Tag it with a matching `v` prefix and push the tag, e.g. `git tag v1.1.1 && git push origin v1.1.1`
 
 That's it — the **Release** workflow runs the tests, builds the installer and publishes the GitHub
-release with the `.exe` attached. To do it by hand instead, run `.\build-installer.ps1` and upload
-`dist\FolderSyncSetup-<version>.exe` to a release yourself.
+release with the `.exe` and its `.sha256` attached, then reads the release back to confirm GitHub
+reports the same checksum. To do it by hand instead, run `.\build-installer.ps1` and upload both
+`dist\FolderSyncSetup-<version>.exe` and `dist\FolderSyncSetup-<version>.exe.sha256` yourself.
 
-Existing installs compare the release **tag** against their own version and download the first
-`.exe` asset attached to it.
+Existing installs compare the release **tag** against their own version, download the `Setup`
+`.exe` asset, and run it only if it matches both GitHub's digest for the asset and the `.sha256`
+file. Leave the `.sha256` out and the app will not install that release itself.
 
 ---
 
@@ -345,6 +351,9 @@ Google Drive  iCloud    OneDrive     Backup drive
   mirroring far better than hand-written copy code.
 - Deletions in mirror mode are detected with a **list-only pass** first, so they can be moved to
   the recycle folder before the real mirror runs.
+- robocopy's output is read without relying on its English words, which are translated on
+  non-English Windows: a deletion is recognised as a path inside the receiving folder, a folder by
+  its trailing `\`, and the totals by their fixed order.
 - Task Scheduler provides automation; the app itself doesn't need to stay running.
 
 ### Why cloud storage is treated as a folder
@@ -369,6 +378,25 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
 ---
 
 ## Version history
+
+### Unreleased
+
+- **Fixed: non-English Windows.** robocopy's labels are translated there, so the app found nothing a
+  mirror would delete: nothing was moved to the recycle folder, the large-deletion guard never fired,
+  and every report said no files were copied. Its output is now read without relying on any word
+  robocopy prints.
+- **Fixed: files with non-English names were deleted for good** instead of being recycled, because the
+  listing could not represent them. It is now read in full Unicode, and with recycling on, a mirror
+  never deletes anything it could not move aside first.
+- **Fixed: two-way pairs overwrote a same-time, different-size file with no copy kept,** and never
+  cleaned up their own backup batches.
+- **One sync at a time.** A scheduled run and **Sync now** can no longer run over each other, and a
+  second copy of the window points you at the one already running.
+- **Updates are checked before they run.** The installer must match the SHA-256 published with the
+  release, or it is deleted and not run.
+- A drive root (`E:\`) works as a folder, a hand-edited `RecycleFolderName` can no longer point outside
+  the pair, and a scheduled run that is stopped part-way keeps its log.
+- Built on **.NET 10**, with Dependabot keeping the packages and the SDK current.
 
 ### 1.1.3
 

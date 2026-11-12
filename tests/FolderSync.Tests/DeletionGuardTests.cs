@@ -111,6 +111,87 @@ public class DeletionGuardTests
         Assert.Equal(0, DeletionGuard.CountFiles(Path.Combine(Path.GetTempPath(), "no-such-" + Guid.NewGuid()), "_FolderSyncTrash"));
     }
 
+    [Fact]
+    public void One_unreadable_sub_folder_does_not_switch_the_guard_off()
+    {
+        // The count used to give up at the first unreadable sub-folder and report 0, and 0 makes the
+        // guard stand down - so a single locked folder anywhere at the destination (a Documents folder
+        // always has some) silently disabled it.
+        string root = NewFolder();
+        string locked = Path.Combine(root, "locked");
+        Directory.CreateDirectory(locked);
+        for (int i = 0; i < 3; i++) File.WriteAllText(Path.Combine(root, $"f{i}.txt"), "x");
+        File.WriteAllText(Path.Combine(locked, "hidden.txt"), "x");
+
+        using (DenyListing(locked))
+        {
+            int count = DeletionGuard.CountFiles(root, "_FolderSyncTrash");
+
+            Assert.Equal(3, count);
+            // And with that count, emptying the readable part is still caught.
+            Assert.True(DeletionGuard.ShouldStop(3, count, 1, Percent, out _));
+        }
+    }
+
+    [Fact]
+    public void A_receiving_folder_that_cannot_be_read_at_all_is_uncountable_not_empty()
+    {
+        // "Empty" would let the deletion through; "could not count" makes the engine stop instead.
+        string root = NewFolder();
+        File.WriteAllText(Path.Combine(root, "a.txt"), "x");
+
+        using (DenyListing(root))
+            Assert.Equal(DeletionGuard.Uncountable, DeletionGuard.CountFiles(root, "_FolderSyncTrash"));
+    }
+
+    [Fact]
+    public void Hidden_files_count_towards_the_total()
+    {
+        string root = NewFolder();
+        string hidden = Path.Combine(root, "h.txt");
+        File.WriteAllText(hidden, "x");
+        File.SetAttributes(hidden, FileAttributes.Hidden);
+
+        Assert.Equal(1, DeletionGuard.CountFiles(root, "_FolderSyncTrash"));
+    }
+
+    [Theory]
+    [InlineData(0, 1)]       // 0% would stop every mirror over the minimum
+    [InlineData(-10, 1)]
+    [InlineData(150, 100)]   // over 100% could never fire
+    public void A_percentage_outside_one_to_a_hundred_is_clamped(int configured, int effective)
+    {
+        // At the effective threshold exactly: stopped. Just under it: allowed.
+        Assert.True(DeletionGuard.ShouldStop(effective, 100, 1, configured, out _));
+        if (effective > 1)
+            Assert.False(DeletionGuard.ShouldStop(effective - 1, 100, 1, configured, out _));
+    }
+
+    /// <summary>Denies the current user listing <paramref name="folder"/> until disposed.</summary>
+    private static IDisposable DenyListing(string folder)
+    {
+        var info = new DirectoryInfo(folder);
+        var user = System.Security.Principal.WindowsIdentity.GetCurrent().User!;
+        var rule = new System.Security.AccessControl.FileSystemAccessRule(
+            user, System.Security.AccessControl.FileSystemRights.ListDirectory,
+            System.Security.AccessControl.AccessControlType.Deny);
+
+        var acl = info.GetAccessControl();
+        acl.AddAccessRule(rule);
+        info.SetAccessControl(acl);
+        return new Undo(() =>
+        {
+            var restored = info.GetAccessControl();
+            restored.RemoveAccessRule(rule);
+            info.SetAccessControl(restored);
+        });
+    }
+
+    private sealed class Undo(Action undo) : IDisposable
+    {
+        public void Dispose() => undo();
+    }
+
     private static string NewFolder()
     {
         string path = Path.Combine(Path.GetTempPath(), "fs-guard-" + Guid.NewGuid().ToString("N")[..8]);

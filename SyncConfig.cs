@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -68,6 +69,17 @@ public sealed class SyncTarget : INotifyPropertyChanged
     /// <summary>How the mode reads in the UI.</summary>
     [JsonIgnore]
     public string ModeText => Mirror is null ? "(not set)" : Mirror.Value ? "Mirror" : "Additive";
+}
+
+/// <summary>
+/// config.json exists but could not be opened, even after waiting - another program kept it locked, or
+/// access is denied. Distinct from a damaged file: nothing is set aside or overwritten, and a scheduled
+/// run fails rather than syncing with settings that are not the user's.
+/// </summary>
+public sealed class ConfigUnavailableException : IOException
+{
+    public ConfigUnavailableException(string path, Exception inner)
+        : base($"The settings file could not be opened ({inner.Message}): {path}", inner) { }
 }
 
 /// <summary>When a scheduled sync should send a notification email.</summary>
@@ -165,7 +177,29 @@ public sealed class SyncConfig
     public int RecycleRetentionDays { get; set; } = 30;
 
     /// <summary>Folder (inside each destination) that holds moved-aside files. Never mirrored.</summary>
-    public string RecycleFolderName { get; set; } = "_FolderSyncTrash";
+    public string RecycleFolderName { get; set; } = DefaultRecycleFolderName;
+
+    public const string DefaultRecycleFolderName = "_FolderSyncTrash";
+
+    /// <summary>
+    /// True for a single, ordinary folder name. Rejects "..", ".", anything with a path separator or a
+    /// drive ("..\x", "C:\x"), and names Windows cannot create. A hand-edited ".." made the recycle
+    /// folder the destination's parent, and pruning old batches then deleted the destination's siblings.
+    /// </summary>
+    public static bool IsValidRecycleFolderName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        string n = name.Trim();
+        if (n is "." or "..") return false;
+        if (n.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return false;   // includes \ / : * ? " < > |
+        if (n.EndsWith('.')) return false;                                     // Windows drops it silently
+        return true;
+    }
+
+    /// <summary>The recycle folder name to actually use: the configured one if valid, else the default.</summary>
+    [JsonIgnore]
+    public string SafeRecycleFolderName =>
+        IsValidRecycleFolderName(RecycleFolderName) ? RecycleFolderName.Trim() : DefaultRecycleFolderName;
 
     /// <summary>
     /// Stop a mirror that would delete an unexpectedly large share of the receiving side, instead of
@@ -174,7 +208,7 @@ public sealed class SyncConfig
     public bool GuardLargeDeletions { get; set; } = true;
 
     /// <summary>Share of the receiving side that, once exceeded, is treated as suspicious.</summary>
-    public int LargeDeletionPercent { get; set; } = 25;
+    public int LargeDeletionPercent { get; set; } = DefaultLargeDeletionPercent;
 
     /// <summary>Never treat fewer files than this as suspicious, whatever the percentage.</summary>
     public int LargeDeletionMinimumFiles { get; set; } = 25;
@@ -312,65 +346,192 @@ public sealed class SyncConfig
 
     private static readonly JsonSerializerOptions JsonOpts = new() { WriteIndented = true };
 
+    public const int DefaultLargeDeletionPercent = 25;
+
+    /// <summary>
+    /// Why these are the built-in defaults rather than the user's own settings, or null when config.json
+    /// was read normally. Set when the file was damaged. A scheduled run treats it as a failure, so a
+    /// broken config raises an alarm instead of quietly syncing nothing and reporting success.
+    /// </summary>
+    [JsonIgnore]
+    public string? LoadProblem { get; private set; }
+
+    /// <summary>
+    /// The two-way "keep the previous version" safety net is actually in force. It needs both settings:
+    /// the previous versions are filed in the recycle folder, so turning recycling off turns this off too.
+    /// The engine and the health check both read this, so they cannot disagree about it.
+    /// </summary>
+    [JsonIgnore]
+    public bool KeepsReplacedVersions => BackupOverwrittenFiles && RecycleDeletedFiles;
+
+    /// <summary>Loads %LOCALAPPDATA%\FolderSync\config.json. See <see cref="LoadFrom"/>.</summary>
+    /// <exception cref="ConfigUnavailableException">The file exists but stayed locked or unreadable.</exception>
     public static SyncConfig Load()
     {
-        Directory.CreateDirectory(AppDataDir);
         Directory.CreateDirectory(LogDir);
-
-        if (File.Exists(ConfigPath))
-        {
-            try
-            {
-                var cfg = JsonSerializer.Deserialize<SyncConfig>(File.ReadAllText(ConfigPath));
-                if (cfg is not null)
-                {
-                    // Return the saved settings as they are - including a blank Source, which is a
-                    // legitimate state. (Treating "blank" as "invalid" here would wipe the user's
-                    // own config and make an empty source impossible to save.)
-                    cfg.Email ??= new EmailSettings();
-                    cfg.Targets ??= new List<SyncTarget>();
-                    cfg.Pairs ??= new List<SyncPair>();
-                    // Destinations saved before per-destination modes existed inherit the old
-                    // global setting, so an existing mirror setup keeps mirroring.
-                    foreach (var t in cfg.Targets) t.Mirror ??= cfg.Mirror;
-                    bool changed = cfg.MigrateTargetsToPairs();
-                    changed |= cfg.DropUnusableCloudAccountPairs();
-                    if (changed) cfg.Save();
-                    cfg.ExcludeFiles ??= new List<string>();
-                    cfg.ExcludeFolders ??= new List<string>();
-                    if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)
-                        || cfg.UpdateRepo.Equals(LegacyUpdateRepo, StringComparison.OrdinalIgnoreCase))
-                        cfg.UpdateRepo = DefaultUpdateRepo;
-                    if (string.IsNullOrWhiteSpace(cfg.RecycleFolderName)) cfg.RecycleFolderName = "_FolderSyncTrash";
-                    return cfg;
-                }
-            }
-            catch (Exception ex)
-            {
-                // A damaged config used to be replaced by defaults on the spot, silently destroying
-                // every folder pair, the email settings and the schedule preferences. Keep the file so
-                // it can be inspected or repaired by hand, and leave a note saying what happened.
-                PreserveUnreadableConfig(ex);
-            }
-        }
-
-        var def = Default();
-        def.Save();
-        return def;
-    }
-
-    /// <summary>Sets the damaged file aside and records why, then lets the caller fall back to defaults.</summary>
-    private static void PreserveUnreadableConfig(Exception cause)
-    {
-        string? kept = MoveConfigAside(ConfigPath, DateTime.Now);
-        AppendEvent($"[Config] could not be read ({cause.Message}). "
-                  + (kept is null ? "It could not be set aside." : $"Kept as {kept}.")
-                  + " Started from defaults.");
+        return LoadFrom(ConfigPath, AppendEvent);
     }
 
     /// <summary>
-    /// Renames a config file that could not be read to "config.bad-&lt;timestamp&gt;.json", so the
-    /// defaults written next do not destroy it. Returns the new path, or null if it could not be moved.
+    /// Loads the settings from <paramref name="configPath"/>, path-taking so it can be tested without
+    /// touching the real configuration.
+    ///
+    /// <para>Only a file that genuinely fails to parse counts as damaged. A file that is merely busy -
+    /// the window saving it at the moment a scheduled run starts, an antivirus scan, an editor - is
+    /// retried, and if it stays busy this throws <see cref="ConfigUnavailableException"/> and leaves the
+    /// file alone. Treating "busy" as "damaged" used to set a perfectly good config aside and carry on
+    /// with no folder pairs at all.</para>
+    /// </summary>
+    public static SyncConfig LoadFrom(string configPath, Action<string>? log = null,
+                                      int lockedAttempts = 15, int lockedDelayMs = 200)
+    {
+        log ??= _ => { };
+        Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(configPath))!);
+
+        string? text = ReadConfigText(configPath, lockedAttempts, lockedDelayMs);
+        if (text is null)
+        {
+            // First run: nothing saved yet.
+            var fresh = Default();
+            TrySave(fresh, configPath, log);
+            return fresh;
+        }
+
+        if (!TryParse(text, out var cfg, out string error))
+        {
+            // Another process may have replaced the file since it was read - two scheduled runs that
+            // start together, one of which has already rescued it. Look once more before deciding.
+            string? again = ReadConfigText(configPath, lockedAttempts, lockedDelayMs);
+            if (again is null || again == text || !TryParse(again, out cfg, out _))
+                return RecoverFromDamage(configPath, error, log);
+        }
+
+        Normalise(cfg!, configPath, log);
+        return cfg!;
+    }
+
+    /// <summary>The file's text, or null when there is no file. Retries while another program has it locked.</summary>
+    private static string? ReadConfigText(string path, int attempts, int delayMs)
+    {
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                // Share everything, including delete, so a reader never blocks a writer's atomic replace.
+                using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
+                                                  FileShare.ReadWrite | FileShare.Delete);
+                using var reader = new StreamReader(stream);
+                return reader.ReadToEnd();
+            }
+            catch (FileNotFoundException) { return null; }
+            catch (DirectoryNotFoundException) { return null; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                if (attempt >= Math.Max(1, attempts)) throw new ConfigUnavailableException(path, ex);
+                Thread.Sleep(Math.Max(0, delayMs));
+            }
+        }
+    }
+
+    private static bool TryParse(string text, out SyncConfig? cfg, out string error)
+    {
+        try
+        {
+            cfg = JsonSerializer.Deserialize<SyncConfig>(text);
+            error = cfg is null ? "the file holds no settings" : "";
+            return cfg is not null;
+        }
+        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        {
+            cfg = null;
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Fills in anything an older version or a hand edit left out, and migrates old layouts. Settings are
+    /// returned as they are otherwise - including a blank Source, which is a legitimate state.
+    /// </summary>
+    private static void Normalise(SyncConfig cfg, string configPath, Action<string> log)
+    {
+        cfg.Email ??= new EmailSettings();
+        cfg.Targets ??= new List<SyncTarget>();
+        cfg.Pairs ??= new List<SyncPair>();
+        cfg.ExcludeFiles ??= new List<string>();
+        cfg.ExcludeFolders ??= new List<string>();
+
+        // A hand-edited "Left": null would otherwise surface as a crash in whichever screen reads it first.
+        cfg.Pairs.RemoveAll(p => p is null);
+        cfg.Targets.RemoveAll(t => t is null);
+        foreach (var p in cfg.Pairs)
+        {
+            p.Name ??= "";
+            p.Left ??= "";
+            p.Right ??= "";
+        }
+
+        // Destinations saved before per-destination modes existed inherit the old global setting, so
+        // an existing mirror setup keeps mirroring.
+        foreach (var t in cfg.Targets) t.Mirror ??= cfg.Mirror;
+
+        if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)
+            || cfg.UpdateRepo.Equals(LegacyUpdateRepo, StringComparison.OrdinalIgnoreCase))
+            cfg.UpdateRepo = DefaultUpdateRepo;
+        if (!IsValidRecycleFolderName(cfg.RecycleFolderName))
+        {
+            if (!string.IsNullOrWhiteSpace(cfg.RecycleFolderName))
+                log($"[Config] RecycleFolderName \"{cfg.RecycleFolderName}\" is not a plain folder name; "
+                  + $"using \"{DefaultRecycleFolderName}\".");
+            cfg.RecycleFolderName = DefaultRecycleFolderName;
+        }
+
+        // Outside 1-100 the guard either stops every mirror (0) or can never fire (over 100).
+        if (cfg.LargeDeletionPercent is < 1 or > 100)
+        {
+            log($"[Config] LargeDeletionPercent {cfg.LargeDeletionPercent} is outside 1-100; "
+              + $"using {DefaultLargeDeletionPercent}.");
+            cfg.LargeDeletionPercent = DefaultLargeDeletionPercent;
+        }
+
+        bool changed = cfg.MigrateTargetsToPairs();
+        changed |= cfg.DropUnusableCloudAccountPairs();
+        // A failed save here is not damage: the migrated settings are in use, and saving is retried later.
+        if (changed) TrySave(cfg, configPath, log);
+    }
+
+    /// <summary>
+    /// The file could not be parsed. Keep a copy of it, then fall back to defaults. If no copy can be
+    /// kept, nothing is written at all, because writing would destroy the only copy of the settings.
+    /// </summary>
+    private static SyncConfig RecoverFromDamage(string configPath, string error, Action<string> log)
+    {
+        var def = Default();
+        string? kept = MoveConfigAside(configPath, DateTime.Now);
+
+        if (kept is null)
+        {
+            def.LoadProblem = $"config.json could not be read ({error}) and could not be set aside, so it "
+                            + "was left untouched. Default settings are in use and have not been saved.";
+            log("[Config] " + def.LoadProblem);
+            return def;
+        }
+
+        def.LoadProblem = $"config.json could not be read ({error}). It was kept as {kept}, and Folder "
+                        + "Sync started from default settings.";
+        log("[Config] " + def.LoadProblem);
+        TrySave(def, configPath, log);
+        return def;
+    }
+
+    /// <summary>
+    /// Preserves a config file that could not be read as "config.bad-&lt;timestamp&gt;.json", so the
+    /// defaults written next do not destroy it. Returns the kept path, or null when there was nothing to
+    /// keep or no copy could be made.
+    ///
+    /// <para>Moves the file when it can, and copies it when it cannot (another program holding it open
+    /// does not stop a copy). Never overwrites an earlier rescue: a second one in the same second - two
+    /// scheduled runs starting together - gets its own "-2" name instead.</para>
     ///
     /// Takes the path rather than using <see cref="ConfigPath"/> so it can be tested without touching
     /// the real configuration. Never throws: this runs on the way to a fallback that has to succeed.
@@ -382,9 +543,36 @@ public sealed class SyncConfig
             if (!File.Exists(configPath)) return null;
 
             string folder = Path.GetDirectoryName(configPath) ?? "";
-            string kept = Path.Combine(folder, $"config.bad-{when:yyyyMMdd-HHmmss}.json");
-            File.Move(configPath, kept, overwrite: true);
-            return kept;
+            string stamp = when.ToString("yyyyMMdd-HHmmss", CultureInfo.InvariantCulture);
+
+            for (int n = 1; n <= 100; n++)
+            {
+                string kept = Path.Combine(folder, n == 1 ? $"config.bad-{stamp}.json" : $"config.bad-{stamp}-{n}.json");
+                if (File.Exists(kept)) continue;
+
+                try
+                {
+                    File.Move(configPath, kept, overwrite: false);
+                    return kept;
+                }
+                catch (IOException) when (File.Exists(kept))
+                {
+                    continue;    // another process claimed this name a moment ago
+                }
+                catch
+                {
+                    // Could not be moved, usually because another program has it open. A copy keeps the
+                    // contents just as well.
+                    try
+                    {
+                        File.Copy(configPath, kept, overwrite: false);
+                        return kept;
+                    }
+                    catch (IOException) when (File.Exists(kept)) { continue; }
+                    catch { return null; }
+                }
+            }
+            return null;
         }
         catch { return null; }
     }
@@ -458,10 +646,57 @@ public sealed class SyncConfig
     [JsonIgnore]
     public IEnumerable<SyncPair> ActivePairs => (Pairs ?? new List<SyncPair>()).Where(p => p.Enabled);
 
-    public void Save()
+    public void Save() => SaveTo(ConfigPath);
+
+    /// <summary>
+    /// Writes the settings atomically: to a temporary file first, then swapped into place. Writing the
+    /// file in place meant a crash, a full disk or a reader arriving mid-write could see half a file -
+    /// which is exactly what then got treated as a damaged config.
+    /// </summary>
+    public void SaveTo(string configPath)
     {
-        Directory.CreateDirectory(AppDataDir);
-        File.WriteAllText(ConfigPath, JsonSerializer.Serialize(this, JsonOpts));
+        string full = Path.GetFullPath(configPath);
+        string dir = Path.GetDirectoryName(full)!;
+        Directory.CreateDirectory(dir);
+
+        // Unique per call, so two processes saving at once never share a temporary file.
+        string tmp = Path.Combine(dir, $"{Path.GetFileName(full)}.{Guid.NewGuid():N}.tmp");
+        try
+        {
+            File.WriteAllText(tmp, JsonSerializer.Serialize(this, JsonOpts));
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Move(tmp, full, overwrite: true);
+                    return;
+                }
+                catch (Exception ex) when ((ex is IOException or UnauthorizedAccessException) && attempt < 10)
+                {
+                    Thread.Sleep(100);   // briefly held by a reader that does not share delete access
+                }
+            }
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); } catch { /* a stray .tmp is harmless */ }
+        }
+    }
+
+    /// <summary>Saves, logging rather than throwing. For the load path, which must not fail over a save.</summary>
+    private static bool TrySave(SyncConfig cfg, string configPath, Action<string> log)
+    {
+        try
+        {
+            cfg.SaveTo(configPath);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            log($"[Config] could not be saved ({ex.Message}). The settings are in use for now; "
+              + "saving is tried again on the next change.");
+            return false;
+        }
     }
 
     /// <summary>
