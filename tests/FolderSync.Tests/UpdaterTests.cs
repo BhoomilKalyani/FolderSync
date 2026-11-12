@@ -58,4 +58,33 @@ public class UpdaterTests
     {
         Assert.True(Updater.CurrentVersion > new Version(0, 0, 0));
     }
+
+    [Fact]
+    public void Release_notes_are_shown_without_their_markdown()
+    {
+        // The 1.2.0 notes exactly as GitHub returned them; the update window showed every symbol.
+        const string notes = "## Folder Sync 1.2.0\r\n\r\nDownload **FolderSyncSetup-1.2.0.exe** below and run it.\r\n"
+                           + "Installs per-user with no admin rights; the .NET runtime is bundled.\r\n\r\n"
+                           + "SHA-256: `b55688a35348b8da031cbccc6a944970e71df09e8259a0b38c64c828dd0dd9fb`";
+
+        string text = Updater.NotesAsPlainText(notes);
+
+        Assert.StartsWith("Folder Sync 1.2.0", text);
+        Assert.Contains("Download FolderSyncSetup-1.2.0.exe below", text);
+        Assert.Contains("SHA-256: b55688a35348b8da031cbccc6a944970e71df09e8259a0b38c64c828dd0dd9fb", text);
+        Assert.DoesNotContain("#", text);
+        Assert.DoesNotContain("**", text);
+        Assert.DoesNotContain("`", text);
+    }
+
+    [Theory]
+    [InlineData("- first\n* second", "• first\n• second")]
+    [InlineData("See [the README](https://example.invalid/r).", "See the README (https://example.invalid/r).")]
+    [InlineData("Keep C# and 2 * 3 as they are", "Keep C# and 2 * 3 as they are")]
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void Release_notes_lists_links_and_plain_text(string? markdown, string expected)
+    {
+        Assert.Equal(expected.Replace("\n", Environment.NewLine), Updater.NotesAsPlainText(markdown));
+    }
 }

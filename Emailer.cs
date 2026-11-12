@@ -29,7 +29,9 @@ public static class Emailer
         var secure = s.SmtpPort == 465 ? SecureSocketOptions.SslOnConnect : SecureSocketOptions.StartTls;
         client.Connect(s.SmtpHost, s.SmtpPort, secure);
         client.Authenticate(s.Username, s.GetPassword());
-        client.Send(msg);
+        // MailKit 5 sends a request rather than a bare message. A recipient the server rejects still
+        // throws (SmtpCommandException), as in 4.x, so a bad "To" address is reported, not skipped.
+        client.Send(new MailKit.SendRequest(msg));
         client.Disconnect(true);
     }
 

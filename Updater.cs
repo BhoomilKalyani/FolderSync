@@ -181,6 +181,27 @@ public static class Updater
         };
     }
 
+    /// <summary>
+    /// Release notes as plain text for the update window. GitHub writes them in Markdown, which the
+    /// window showed as-is - "## Folder Sync 1.2.0", "**FolderSyncSetup-1.2.0.exe**", backticks round the
+    /// checksum. Headings, emphasis, inline code and link syntax are reduced to their text; list bullets
+    /// become "•". Anything else is left alone.
+    /// </summary>
+    public static string NotesAsPlainText(string? markdown)
+    {
+        if (string.IsNullOrWhiteSpace(markdown)) return "";
+        var lines = markdown.Replace("\r\n", "\n").Split('\n').Select(line =>
+        {
+            string s = System.Text.RegularExpressions.Regex.Replace(line, @"^\s{0,3}#{1,6}\s+", "");   // headings
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"^(\s*)[-*+]\s+", "$1• ");             // bullets
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"\[([^\]]+)\]\(([^)\s]+)\)", "$1 ($2)"); // links
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"(\*\*|__)(.+?)\1", "$2");             // bold
+            s = System.Text.RegularExpressions.Regex.Replace(s, @"`([^`]+)`", "$1");                     // code
+            return s.TrimEnd();
+        });
+        return string.Join(Environment.NewLine, lines).Trim();
+    }
+
     /// <summary>Turns a tag such as "v1.2.3" or "1.2" into a Version, or null if unparseable.</summary>
     public static Version? ParseVersion(string tag)
     {
