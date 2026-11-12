@@ -29,17 +29,25 @@ public partial class UpdateWindow : Window
             UpdateButton.Content = "Open download page";
             StatusText.Text = "This release has no installer attached — download it from GitHub.";
         }
+        else if (!info.CanVerifySetup)
+        {
+            // Never run an installer that cannot be checked; let the user decide on the release page.
+            UpdateButton.Content = "Open download page";
+            StatusText.Text = "This release does not publish a checksum, so it cannot be installed from here — download it from GitHub.";
+        }
     }
+
+    private bool CanInstallHere => !string.IsNullOrEmpty(_info.SetupUrl) && _info.CanVerifySetup;
 
     private async void Update_Click(object sender, RoutedEventArgs e)
     {
-        if (string.IsNullOrEmpty(_info.SetupUrl)) { OpenReleasePage(); return; }
+        if (!CanInstallHere) { OpenReleasePage(); return; }
 
         UpdateButton.IsEnabled = false;
         LaterButton.IsEnabled = false;
         Progress.Visibility = Visibility.Visible;
         Progress.Value = 0;
-        StatusText.Text = "Downloading…";
+        StatusText.Text = "Downloading and checking…";
         _cts = new CancellationTokenSource();
 
         try

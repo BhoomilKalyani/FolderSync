@@ -1,0 +1,51 @@
+# Keeps the NuGet packages, the .NET SDK and the GitHub Actions up to date with weekly pull requests.
+# CI runs the full test suite on each one, so an update that breaks something shows up as a red PR
+# rather than in a release.
+version: 2
+updates:
+  - package-ecosystem: nuget
+    directories:
+      - "/"
+      - "/tests/FolderSync.Tests"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      # The test-only packages move together and never ship, so one PR for all of them.
+      test-packages:
+        patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+          - "coverlet.*"
+      # MailKit sends the notification emails; minor and patch updates (often security fixes) come
+      # grouped, while a new major version gets a PR of its own to be checked by hand.
+      app-packages:
+        patterns:
+          - "*"
+        exclude-patterns:
+          - "xunit*"
+          - "Microsoft.NET.Test.Sdk"
+          - "coverlet.*"
+        update-types:
+          - minor
+          - patch
+
+  # global.json: feature bands and patches of the .NET SDK the app is built with. A new major .NET is
+  # a deliberate move (target framework, CI, installer), so it is not proposed here.
+  - package-ecosystem: dotnet-sdk
+    directory: "/"
+    schedule:
+      interval: weekly
+    ignore:
+      - dependency-name: "*"
+        update-types:
+          - version-update:semver-major
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: weekly
+    groups:
+      actions:
+        patterns:
+          - "*"

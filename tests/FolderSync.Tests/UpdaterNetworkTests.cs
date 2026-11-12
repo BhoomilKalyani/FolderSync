@@ -88,7 +88,7 @@ public class UpdaterNetworkTests : IDisposable
             await s.WriteAsync(body);
         });
 
-        string file = await Updater.DownloadSetupAsync(Info(server.Url, cachedSize: 4000), null);
+        string file = await Updater.DownloadSetupAsync(Info(server.Url, cachedSize: 4000, sha256: Sha256(body)), null);
 
         Assert.Equal(SetupPath, file);
         Assert.Equal(body, File.ReadAllBytes(file));
@@ -133,10 +133,147 @@ public class UpdaterNetworkTests : IDisposable
         Assert.False(File.Exists(SetupPath + ".part"));
     }
 
+    // ---------- the installer must match the release's checksum ----------
+
+    [Fact]
+    public async Task A_release_publishes_its_installers_checksum_two_ways()
+    {
+        // GitHub's own digest for the asset, and the .sha256 file the release workflow uploads beside it.
+        string hash = new string('a', 64);
+        string json = "{\"tag_name\":\"v9.8.7\",\"assets\":["
+                    + "{\"name\":\"FolderSyncSetup-9.8.7.exe\",\"browser_download_url\":\"https://example.invalid/s\",\"size\":1234,"
+                    + "\"digest\":\"sha256:" + hash.ToUpperInvariant() + "\"},"
+                    + "{\"name\":\"FolderSyncSetup-9.8.7.exe.sha256\",\"browser_download_url\":\"https://example.invalid/sum\",\"size\":90}]}";
+        await using var server = new OneShotServer(Status(200, json));
+
+        var info = await Updater.QueryLatestAsync(server.Url, false, new Version(1, 0, 0));
+
+        Assert.Equal(hash, info!.SetupSha256);                     // normalised to lower case
+        Assert.Equal("https://example.invalid/sum", info.ChecksumUrl);
+        Assert.Equal("https://example.invalid/s", info.SetupUrl);  // the .sha256 is never taken for the installer
+        Assert.True(info.CanVerifySetup);
+    }
+
+    [Fact]
+    public async Task A_release_with_no_checksum_cannot_be_installed_from_the_app()
+    {
+        const string json = "{\"tag_name\":\"v9.8.7\",\"assets\":[{\"name\":\"FolderSyncSetup-9.8.7.exe\","
+                          + "\"browser_download_url\":\"https://example.invalid/s\",\"size\":1234,\"digest\":null}]}";
+        await using var server = new OneShotServer(Status(200, json));
+
+        var info = await Updater.QueryLatestAsync(server.Url, false, new Version(1, 0, 0));
+
+        Assert.Null(info!.SetupSha256);
+        Assert.Null(info.ChecksumUrl);
+        Assert.False(info.CanVerifySetup);
+    }
+
+    [Fact]
+    public async Task An_installer_that_does_not_match_its_checksum_is_deleted_and_never_handed_back()
+    {
+        // Damaged or swapped on the way: the right size, the wrong bytes. The size check alone let it run.
+        byte[] body = Bytes(5000);
+        await using var server = new OneShotServer(Ok(body));
+
+        var info = Info(server.Url, cachedSize: body.Length, sha256: new string('0', 64));
+        var ex = await Assert.ThrowsAsync<IOException>(() => Updater.DownloadSetupAsync(info, null));
+
+        Assert.Contains("checksum", ex.Message);
+        Assert.False(File.Exists(SetupPath));
+        Assert.False(File.Exists(SetupPath + ".part"));
+    }
+
+    [Fact]
+    public async Task The_published_checksum_file_is_checked_when_github_gives_no_digest()
+    {
+        byte[] body = Bytes(3000);
+        await using var server = new OneShotServer(
+            Status(200, Sha256(body) + " *FolderSyncSetup.exe\n"),   // first the .sha256 file
+            Ok(body));                                               // then the installer
+
+        var info = new UpdateInfo
+        {
+            Version = _version, SetupUrl = server.Url + "/setup", ChecksumUrl = server.Url + "/sum",
+        };
+        string file = await Updater.DownloadSetupAsync(info, null);
+
+        Assert.Equal(body, File.ReadAllBytes(file));
+    }
+
+    [Fact]
+    public async Task Both_checksums_must_match_when_both_are_published()
+    {
+        // The digest is right but the checksum file disagrees: something is wrong, so nothing is run.
+        byte[] body = Bytes(3000);
+        await using var server = new OneShotServer(
+            Status(200, new string('0', 64) + " *FolderSyncSetup.exe\n"),
+            Ok(body));
+
+        var info = new UpdateInfo
+        {
+            Version = _version, SetupUrl = server.Url, ChecksumUrl = server.Url, SetupSha256 = Sha256(body),
+        };
+        await Assert.ThrowsAsync<IOException>(() => Updater.DownloadSetupAsync(info, null));
+
+        Assert.False(File.Exists(SetupPath));
+    }
+
+    [Fact]
+    public async Task Nothing_is_downloaded_for_a_release_that_cannot_be_checked()
+    {
+        var info = new UpdateInfo { Version = _version, SetupUrl = "http://127.0.0.1:9/never-fetched" };
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => Updater.DownloadSetupAsync(info, null));
+        Assert.False(File.Exists(SetupPath));
+    }
+
+    [Theory]
+    [InlineData("sha256:ABCDEF0123456789abcdef0123456789ABCDEF0123456789abcdef0123456789", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")]
+    [InlineData("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789")]
+    [InlineData("sha512:abcdef", null)]       // another algorithm
+    [InlineData("sha256:abc", null)]          // too short
+    [InlineData("sha256:zzcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    public void Only_a_well_formed_sha256_digest_is_accepted(string? digest, string? expected)
+    {
+        Assert.Equal(expected, Updater.ParseDigest(digest));
+    }
+
+    [Theory]
+    [InlineData("ABCDEF0123456789abcdef0123456789abcdef0123456789abcdef0123456789 *FolderSyncSetup-1.2.0.exe\n")]
+    [InlineData("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789  FolderSyncSetup-1.2.0.exe")]
+    [InlineData("﻿abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789\r\n")]
+    public void A_checksum_file_is_read_in_the_usual_formats(string text)
+    {
+        Assert.Equal("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789", Updater.ParseChecksumFile(text));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("<html>Not Found</html>")]
+    public void A_checksum_file_that_holds_no_checksum_is_an_error_not_a_pass(string text)
+    {
+        Assert.Throws<InvalidDataException>(() => Updater.ParseChecksumFile(text));
+    }
+
     // ---------- helpers ----------
 
-    private UpdateInfo Info(string url, long cachedSize) =>
-        new() { Version = _version, TagName = "v" + _version, SetupUrl = url, SetupSize = cachedSize };
+    /// <summary>A download description whose checksum matches <paramref name="sha256"/>, or any body if omitted.</summary>
+    private UpdateInfo Info(string url, long cachedSize, string? sha256 = null) =>
+        new()
+        {
+            Version = _version, TagName = "v" + _version, SetupUrl = url, SetupSize = cachedSize,
+            SetupSha256 = sha256 ?? Sha256(Bytes((int)cachedSize)),
+        };
+
+    private static string Sha256(byte[] data) => Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(data)).ToLowerInvariant();
+
+    private static Func<NetworkStream, Task> Ok(byte[] body) => async s =>
+    {
+        await Write(s, $"HTTP/1.1 200 OK\r\nContent-Length: {body.Length}\r\nConnection: close\r\n\r\n");
+        await s.WriteAsync(body);
+    };
 
     private static byte[] Bytes(int n)
     {
@@ -155,22 +292,28 @@ public class UpdaterNetworkTests : IDisposable
 
     private static Task Write(NetworkStream s, string text) => s.WriteAsync(Encoding.ASCII.GetBytes(text)).AsTask();
 
-    /// <summary>Accepts one connection on loopback, reads the request headers, then runs a scripted reply.</summary>
+    /// <summary>
+    /// Accepts one connection on loopback per scripted reply, in order: reads the request headers, then
+    /// runs the reply. Every reply closes its connection, so each request arrives on a new one.
+    /// </summary>
     private sealed class OneShotServer : IAsyncDisposable
     {
         private readonly TcpListener _listener = new(IPAddress.Loopback, 0);
         private readonly Task _serving;
 
-        public OneShotServer(Func<NetworkStream, Task> reply)
+        public OneShotServer(params Func<NetworkStream, Task>[] replies)
         {
             _listener.Start();
             _serving = Task.Run(async () =>
             {
-                using var client = await _listener.AcceptTcpClientAsync();
-                var stream = client.GetStream();
-                await ReadHeaders(stream);
-                await reply(stream);
-                await stream.FlushAsync();
+                foreach (var reply in replies)
+                {
+                    using var client = await _listener.AcceptTcpClientAsync();
+                    var stream = client.GetStream();
+                    await ReadHeaders(stream);
+                    await reply(stream);
+                    await stream.FlushAsync();
+                }
             });
         }
 

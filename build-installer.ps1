@@ -6,7 +6,10 @@
     Produces dist\FolderSyncSetup-<version>.exe. The version comes from <Version> in
     FolderSync.csproj, so bump it there to cut a new release.
 
-    Requires: .NET 8 SDK and Inno Setup 6 (winget install JRSoftware.InnoSetup).
+    Also writes dist\FolderSyncSetup-<version>.exe.sha256, which the release must carry: the app
+    checks a downloaded installer against it before running it.
+
+    Requires: .NET 10 SDK and Inno Setup 6 (winget install JRSoftware.InnoSetup).
 
 .EXAMPLE
     .\build-installer.ps1
@@ -33,7 +36,7 @@ function Find-Tool {
 
 $dotnet = Find-Tool -Candidates @(
     "$env:ProgramFiles\dotnet\dotnet.exe"
-) -Name 'dotnet' -Hint 'Install the .NET 8 SDK: winget install Microsoft.DotNet.SDK.8'
+) -Name 'dotnet' -Hint 'Install the .NET 10 SDK: winget install Microsoft.DotNet.SDK.10'
 
 $iscc = Find-Tool -Candidates @(
     "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe",
@@ -85,9 +88,18 @@ $setup = Join-Path $distDir "FolderSyncSetup-$Version.exe"
 if (-not (Test-Path $setup)) { throw "Installer not found at $setup" }
 $setupMb = [math]::Round(((Get-Item $setup).Length / 1MB), 1)
 
+# The app refuses to run a downloaded installer unless it matches the SHA-256 published with the
+# release, so the checksum file is part of the build. sha256sum's format, ASCII with no BOM.
+$hash = (Get-FileHash -LiteralPath $setup -Algorithm SHA256).Hash.ToLowerInvariant()
+$sumFile = "$setup.sha256"
+[IO.File]::WriteAllText($sumFile, "$hash *$(Split-Path $setup -Leaf)`n", [Text.Encoding]::ASCII)
+
 Write-Host ''
 Write-Host "Done: $setup  ($setupMb MB)" -ForegroundColor Green
+Write-Host "      $sumFile" -ForegroundColor Green
+Write-Host "      SHA-256 $hash" -ForegroundColor DarkGray
 Write-Host ''
 Write-Host 'To release it so other installs get the update notification:' -ForegroundColor Yellow
 Write-Host "  1. git tag v$Version && git push origin v$Version"
-Write-Host "  2. Create a GitHub release for tag v$Version and attach the setup .exe above."
+Write-Host "  2. Create a GitHub release for tag v$Version and attach the setup .exe AND its .sha256 above."
+Write-Host "     (Without the .sha256, or GitHub's own digest, the app will not install the update itself.)"

@@ -302,24 +302,21 @@ public sealed class SyncEngine
         string args = $"{Quote(src)} {Quote(dst)} {copyMode} /R:2 /W:2 /MT:16 /FFT /XJ /NP /NDL{listFlag}{skipOlder}{BuildExclusionArgs(src, dst)}";
 
         var tr = new TargetResult { Destination = dst };
-        var summary = new StringBuilder();
+        // Read by row order, not by the "Files :" label, which is translated on non-English Windows.
+        var totals = new RobocopyTotals();
 
         int exit = await RunRobocopyProcessAsync(args, line =>
         {
             Emit("    " + line);
-            if (line.Contains("Files :") || line.Contains("Dirs :") || line.Contains("Bytes :"))
-                summary.Append(line.Trim()).Append("  ");
-            if (RobocopyOutput.TryParseFilesSummary(line, out int copied, out int failed))
-            {
-                tr.FilesCopied = copied;
-                tr.FilesFailed = failed;
-            }
+            lock (totals) totals.Feed(line);
         }, ct);
 
         tr.ExitCode = exit;
         // robocopy: 0-7 = success (8+ = at least one failure). Bit 3 (8) and above are errors.
         tr.Success = exit < 8;
-        tr.Summary = summary.ToString().Trim();
+        tr.FilesCopied = totals.FilesCopied;
+        tr.FilesFailed = totals.FilesFailed;
+        tr.Summary = totals.Summary;
         return tr;
     }
 
@@ -334,7 +331,9 @@ public sealed class SyncEngine
 
     /// <summary>
     /// Finds what a mirror would delete from the destination (robocopy's "*EXTRA" entries),
-    /// using a list-only pass so nothing is changed yet.
+    /// using a list-only pass so nothing is changed yet. They are recognised by pointing inside the
+    /// destination rather than by the label, which is translated on non-English Windows - where this
+    /// used to find nothing at all, so the guard never fired and nothing was moved aside.
     ///
     /// A failed listing used to be logged as a warning and treated as "nothing to delete", which let the
     /// mirror go ahead with no guard and nothing moved aside. It is now reported, and the pair stops.
@@ -352,9 +351,9 @@ public sealed class SyncEngine
         {
             int exit = await RunRobocopyListAsync(args, line =>
             {
-                if (!RobocopyOutput.TryParseExtraPath(line, dst, out var path)) return;
+                if (!RobocopyOutput.TryParseExtraPath(line, dst, out var path, out bool isDirectory)) return;
                 all.Add(path);
-                if (RobocopyOutput.IsExtraFile(line)) files++;
+                if (!isDirectory) files++;
             }, ct);
 
             // 16 is robocopy's "serious error, nothing done" - the listing is not to be trusted.

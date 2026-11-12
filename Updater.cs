@@ -17,6 +17,25 @@ public sealed class UpdateInfo
     public string? SetupUrl { get; init; }
     public string ReleasePageUrl { get; init; } = "";
     public long SetupSize { get; init; }
+
+    /// <summary>
+    /// The installer's SHA-256 as GitHub reports it for the asset (its "digest"), lower-case hex, or null.
+    /// GitHub works it out from the file it stores, so it catches a download that is damaged or altered
+    /// on its way here.
+    /// </summary>
+    public string? SetupSha256 { get; init; }
+
+    /// <summary>
+    /// The "FolderSyncSetup-x.y.z.exe.sha256" file the release workflow publishes beside the installer,
+    /// or null. Used as well as, or instead of, <see cref="SetupSha256"/>.
+    /// </summary>
+    public string? ChecksumUrl { get; init; }
+
+    /// <summary>
+    /// Whether the installer can be checked before it is run. One that cannot is never run by the app:
+    /// the update window sends the user to the release page instead.
+    /// </summary>
+    public bool CanVerifySetup => SetupSha256 is not null || !string.IsNullOrEmpty(ChecksumUrl);
 }
 
 /// <summary>
@@ -120,25 +139,33 @@ public static class Updater
         var latest = ParseVersion(tag);
         if (latest is null || latest <= current) return null;
 
-        string? setupUrl = null;
+        string? setupUrl = null, setupSha256 = null, checksumUrl = null;
         long setupSize = 0;
         if (root.TryGetProperty("assets", out var assets) && assets.ValueKind == JsonValueKind.Array)
         {
-            // An installer is preferred over any other .exe that happens to be attached, rather than
-            // trusting whichever one GitHub lists first.
-            var exes = assets.EnumerateArray()
+            var all = assets.EnumerateArray()
                 .Select(a => (
                     name: a.TryGetProperty("name", out var n) ? n.GetString() ?? "" : "",
                     url: a.TryGetProperty("browser_download_url", out var d) ? d.GetString() : null,
-                    size: a.TryGetProperty("size", out var s) ? s.GetInt64() : 0))
-                .Where(a => a.name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) && a.url is not null)
+                    size: a.TryGetProperty("size", out var s) && s.ValueKind == JsonValueKind.Number ? s.GetInt64() : 0,
+                    digest: a.TryGetProperty("digest", out var g) && g.ValueKind == JsonValueKind.String ? g.GetString() : null))
+                .Where(a => a.url is not null)
                 .ToList();
 
+            // An installer is preferred over any other .exe that happens to be attached, rather than
+            // trusting whichever one GitHub lists first.
+            var exes = all.Where(a => a.name.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)).ToList();
             var chosen = exes.FirstOrDefault(a => a.name.Contains("Setup", StringComparison.OrdinalIgnoreCase));
             if (chosen.url is null) chosen = exes.FirstOrDefault();
 
-            setupUrl = chosen.url;
-            setupSize = chosen.size;
+            if (chosen.url is not null)
+            {
+                setupUrl = chosen.url;
+                setupSize = chosen.size;
+                setupSha256 = ParseDigest(chosen.digest);
+                string sumName = chosen.name + ".sha256";
+                checksumUrl = all.FirstOrDefault(a => a.name.Equals(sumName, StringComparison.OrdinalIgnoreCase)).url;
+            }
         }
 
         return new UpdateInfo
@@ -148,6 +175,8 @@ public static class Updater
             Notes = (root.TryGetProperty("body", out var b) ? b.GetString() ?? "" : "").Trim(),
             SetupUrl = setupUrl,
             SetupSize = setupSize,
+            SetupSha256 = setupSha256,
+            ChecksumUrl = checksumUrl,
             ReleasePageUrl = root.TryGetProperty("html_url", out var h) ? h.GetString() ?? "" : "",
         };
     }
@@ -171,11 +200,63 @@ public static class Updater
         return new Version(major, minor, build);
     }
 
-    /// <summary>Downloads the installer to the temp folder, reporting 0-100 progress.</summary>
+    /// <summary>
+    /// "sha256:4b2f…" (GitHub's asset digest) or a bare 64-character hex string, as lower-case hex.
+    /// Null for anything else, including a digest made with some other algorithm.
+    /// </summary>
+    public static string? ParseDigest(string? digest)
+    {
+        if (string.IsNullOrWhiteSpace(digest)) return null;
+        string s = digest.Trim();
+        if (s.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)) s = s["sha256:".Length..];
+        return s.Length == 64 && s.All(Uri.IsHexDigit) ? s.ToLowerInvariant() : null;
+    }
+
+    /// <summary>
+    /// Reads a checksum file in the usual "hash *name" / "hash  name" form (or just the hash), as
+    /// lower-case hex. Throws if it does not hold a SHA-256: a checksum that cannot be read is no check.
+    /// </summary>
+    public static string ParseChecksumFile(string text)
+    {
+        string first = (text ?? "").Trim().TrimStart('﻿').Split((char[]?)null, 2, StringSplitOptions.RemoveEmptyEntries)
+                                           .FirstOrDefault() ?? "";
+        return ParseDigest(first)
+            ?? throw new InvalidDataException("The checksum published with the release could not be read.");
+    }
+
+    /// <summary>
+    /// Every SHA-256 the release publishes for its installer. Asking for both and requiring each to
+    /// match means neither source has to be trusted on its own.
+    /// </summary>
+    private static async Task<List<string>> ExpectedHashesAsync(UpdateInfo info, CancellationToken ct)
+    {
+        var hashes = new List<string>();
+        if (info.SetupSha256 is { } digest) hashes.Add(digest);
+        if (!string.IsNullOrEmpty(info.ChecksumUrl))
+        {
+            using var resp = await Http.GetAsync(info.ChecksumUrl, ct);
+            resp.EnsureSuccessStatusCode();
+            hashes.Add(ParseChecksumFile(await resp.Content.ReadAsStringAsync(ct)));
+        }
+        return hashes;
+    }
+
+    /// <summary>
+    /// Downloads the installer to the temp folder, reporting 0-100 progress, and checks it against the
+    /// SHA-256 the release publishes before handing it back to be run.
+    ///
+    /// <para>Setup runs with the user's rights and is not code-signed, so its size was the only check on
+    /// what got executed: an installer damaged in transit, or swapped on the way here, ran all the same.
+    /// It now has to match the release's checksum, or it is deleted and nothing is run. A release with
+    /// no checksum at all is refused here too, rather than run unchecked.</para>
+    /// </summary>
     public static async Task<string> DownloadSetupAsync(UpdateInfo info, IProgress<int>? progress, CancellationToken ct = default)
     {
         if (string.IsNullOrEmpty(info.SetupUrl))
             throw new InvalidOperationException("This release has no installer attached.");
+        if (!info.CanVerifySetup)
+            throw new InvalidOperationException(
+                "This release does not publish a checksum for its installer, so it cannot be checked before it runs.");
 
         string dir = Path.Combine(Path.GetTempPath(), "FolderSyncUpdate");
         Directory.CreateDirectory(dir);
@@ -188,6 +269,10 @@ public static class Updater
         string part = file + ".part";
         try
         {
+            var expectedHashes = await ExpectedHashesAsync(info, ct);
+            using var sha = System.Security.Cryptography.IncrementalHash.CreateHash(
+                System.Security.Cryptography.HashAlgorithmName.SHA256);
+
             using var resp = await Http.GetAsync(info.SetupUrl, HttpCompletionOption.ResponseHeadersRead, ct);
             resp.EnsureSuccessStatusCode();
 
@@ -206,6 +291,7 @@ public static class Updater
                 while ((read = await src.ReadAsync(buffer, ct)) > 0)
                 {
                     await dst.WriteAsync(buffer.AsMemory(0, read), ct);
+                    sha.AppendData(buffer, 0, read);
                     written += read;
                     if (expected > 0) progress?.Report((int)Math.Min(100, written * 100 / expected));
                 }
@@ -215,6 +301,13 @@ public static class Updater
                 throw new IOException(
                     $"The download is incomplete ({Humanise.Size(written)} of {Humanise.Size(expected)}). "
                     + "Nothing has been installed — check your connection and try again.");
+
+            string actual = Convert.ToHexString(sha.GetHashAndReset()).ToLowerInvariant();
+            if (expectedHashes.Count == 0 || expectedHashes.Any(h => h != actual))
+                throw new IOException(
+                    "The downloaded installer does not match the checksum published with the release, so it "
+                    + "was deleted and nothing has been installed. Try again later, or download it from the "
+                    + "release page.");
 
             File.Move(part, file, overwrite: true);
             return file;
