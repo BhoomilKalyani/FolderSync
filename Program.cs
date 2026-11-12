@@ -62,6 +62,17 @@ internal static class Program
     /// </summary>
     private static int RunGui()
     {
+        // One window per user session. A second copy meant two tray icons and two windows each saving
+        // config.json over the other's changes. Held until the process exits.
+        using var instance = new Mutex(initiallyOwned: true, @"Local\FolderSync.Window", out bool firstCopy);
+        if (!firstCopy)
+        {
+            System.Windows.MessageBox.Show(
+                "Folder Sync is already running. Look for its icon in the notification area, next to the clock.",
+                "Folder Sync", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Information);
+            return 0;
+        }
+
         // WinForms is still initialised: the tray icon and folder picker come from it.
         System.Windows.Forms.Application.EnableVisualStyles();
         System.Windows.Forms.Application.SetCompatibleTextRenderingDefault(false);
@@ -149,25 +160,37 @@ internal static class Program
         }
 
         var logPath = SyncConfig.NewSyncLogPath();   // unique file per sync, never appended to an old one
-        var sb = new StringBuilder();
 
+        // Written line by line as the sync goes, not all at once at the end: Task Scheduler stops a run
+        // that passes its 2-hour limit, and a log held in memory until then was simply lost - exactly
+        // the run whose log is most needed.
+        var log = SyncLog.Open(logPath);
         var engine = new SyncEngine(config);
-        engine.Log += line => sb.AppendLine(line);
+        engine.Log += log.WriteLine;
 
         SyncResult result;
         bool fatal = false;
         try
         {
-            result = engine.RunAsync().GetAwaiter().GetResult();
+            // One sync at a time across every copy of the app. Another run (the window, or a second
+            // trigger firing at the same moment) is left to finish; this one has nothing to add.
+            result = SyncLock.Run(() => engine.RunAsync().GetAwaiter().GetResult(), TimeSpan.Zero);
+        }
+        catch (SyncAlreadyRunningException)
+        {
+            log.Dispose();
+            try { File.Delete(logPath); } catch { }
+            AppendEvent("[Sync] skipped - another sync was already running.");
+            return 0;
         }
         catch (Exception ex)
         {
-            sb.AppendLine("FATAL: " + ex);
+            log.WriteLine("FATAL: " + ex);
             result = new SyncResult { Success = false };
             fatal = true;
         }
 
-        try { File.WriteAllText(logPath, sb.ToString()); } catch { }
+        log.Dispose();                                // complete before it is attached to the email
         LastRun.Save(result);                         // so the window can show a summary
         PairHistory.Record(result);                   // so the grid shows each pair's last outcome
         SyncConfig.RecordSyncTime();                  // feeds the --auto minimum-gap throttle

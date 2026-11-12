@@ -177,7 +177,29 @@ public sealed class SyncConfig
     public int RecycleRetentionDays { get; set; } = 30;
 
     /// <summary>Folder (inside each destination) that holds moved-aside files. Never mirrored.</summary>
-    public string RecycleFolderName { get; set; } = "_FolderSyncTrash";
+    public string RecycleFolderName { get; set; } = DefaultRecycleFolderName;
+
+    public const string DefaultRecycleFolderName = "_FolderSyncTrash";
+
+    /// <summary>
+    /// True for a single, ordinary folder name. Rejects "..", ".", anything with a path separator or a
+    /// drive ("..\x", "C:\x"), and names Windows cannot create. A hand-edited ".." made the recycle
+    /// folder the destination's parent, and pruning old batches then deleted the destination's siblings.
+    /// </summary>
+    public static bool IsValidRecycleFolderName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return false;
+        string n = name.Trim();
+        if (n is "." or "..") return false;
+        if (n.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0) return false;   // includes \ / : * ? " < > |
+        if (n.EndsWith('.')) return false;                                     // Windows drops it silently
+        return true;
+    }
+
+    /// <summary>The recycle folder name to actually use: the configured one if valid, else the default.</summary>
+    [JsonIgnore]
+    public string SafeRecycleFolderName =>
+        IsValidRecycleFolderName(RecycleFolderName) ? RecycleFolderName.Trim() : DefaultRecycleFolderName;
 
     /// <summary>
     /// Stop a mirror that would delete an unexpectedly large share of the receiving side, instead of
@@ -456,7 +478,13 @@ public sealed class SyncConfig
         if (string.IsNullOrWhiteSpace(cfg.UpdateRepo)
             || cfg.UpdateRepo.Equals(LegacyUpdateRepo, StringComparison.OrdinalIgnoreCase))
             cfg.UpdateRepo = DefaultUpdateRepo;
-        if (string.IsNullOrWhiteSpace(cfg.RecycleFolderName)) cfg.RecycleFolderName = "_FolderSyncTrash";
+        if (!IsValidRecycleFolderName(cfg.RecycleFolderName))
+        {
+            if (!string.IsNullOrWhiteSpace(cfg.RecycleFolderName))
+                log($"[Config] RecycleFolderName \"{cfg.RecycleFolderName}\" is not a plain folder name; "
+                  + $"using \"{DefaultRecycleFolderName}\".");
+            cfg.RecycleFolderName = DefaultRecycleFolderName;
+        }
 
         // Outside 1-100 the guard either stops every mirror (0) or can never fire (over 100).
         if (cfg.LargeDeletionPercent is < 1 or > 100)

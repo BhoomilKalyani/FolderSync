@@ -48,17 +48,35 @@ public static class RobocopyOutput
         path = "";
         if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(destinationRoot)) return false;
         if (!line.Contains("*EXTRA", StringComparison.OrdinalIgnoreCase)) return false;
+        if (!TryFindPathUnder(line, destinationRoot, out string raw, out int rootLength)) return false;
 
-        string root = destinationRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        int idx = line.IndexOf(root, StringComparison.OrdinalIgnoreCase);
-        if (idx < 0) return false;
-
-        string candidate = line[idx..].Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        string candidate = raw.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
         // Ignore a bare mention of the root itself; we only want things inside it.
-        if (candidate.Length <= root.Length) return false;
+        if (candidate.Length <= rootLength) return false;
 
         path = candidate;
+        return true;
+    }
+
+    /// <summary>
+    /// Finds the path in a robocopy line that lies inside <paramref name="root"/>, returning it untrimmed
+    /// of separators (a trailing "\" marks a directory) and the length of the root as matched.
+    ///
+    /// Matches the root followed by a separator, not the bare root, so "C:\Docs" does not match a line
+    /// about "C:\Docs2\file" - a sibling folder whose name happens to start the same way.
+    /// </summary>
+    private static bool TryFindPathUnder(string line, string root, out string path, out int rootLength)
+    {
+        path = "";
+        string trimmed = root.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        rootLength = trimmed.Length;
+        if (trimmed.Length == 0) return false;
+
+        int idx = line.IndexOf(trimmed + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase);
+        if (idx < 0) return false;
+
+        path = line[idx..].Trim();
         return true;
     }
 
@@ -77,31 +95,34 @@ public static class RobocopyOutput
         line.Contains("*EXTRA File", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
-    /// Pulls the source path out of a "Newer" line — a file that exists on both sides where the
-    /// source copy wins, so the destination copy is about to be overwritten and lost.
+    /// Pulls the source path out of a line for a file that is about to be copied: a candidate for
+    /// overwriting the destination's copy, which would then be lost.
     ///
-    /// Distinct from "New File", which does not exist at the destination and so overwrites nothing.
-    /// Verified against robocopy: <c>"\t    Newer     \t\t      16\tC:\src\shared.txt"</c>.
+    /// <para>Deliberately does not depend on the label. Matching "Newer" alone missed "Changed" - same
+    /// timestamp, different size - so those files were overwritten with no copy kept, and the labels are
+    /// translated on non-English Windows anyway. Whether anything is really overwritten is decided by the
+    /// caller, which checks that the destination already has the file. "New File" lines are dropped here
+    /// as a cheap first filter, as are directory lines and the destination's own "*EXTRA" lines.</para>
+    ///
+    /// Verified against robocopy: <c>"\t    Newer     \t\t      16\tC:\src\shared.txt"</c> and
+    /// <c>"\t    Changed   \t\t      27\tC:\src\same-time.txt"</c>.
     /// </summary>
     public static bool TryParseOverwrittenSourcePath(string line, string sourceRoot, out string path)
     {
         path = "";
         if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(sourceRoot)) return false;
-
-        // "Newer" only, never "New File": the two would otherwise be easy to confuse, and backing up
-        // a file that does not exist yet is impossible.
-        if (!line.Contains("Newer", StringComparison.Ordinal)) return false;
-
-        string root = sourceRoot.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        int idx = line.IndexOf(root, StringComparison.OrdinalIgnoreCase);
-        if (idx < 0) return false;
+        if (line.Contains("New File", StringComparison.OrdinalIgnoreCase)) return false;
+        if (line.Contains("*EXTRA", StringComparison.OrdinalIgnoreCase)) return false;
 
         // Located by searching for the root rather than splitting on whitespace, because the size
         // column can read "1.7 m" - two tokens.
-        string candidate = line[idx..].Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        if (candidate.Length <= root.Length) return false;
+        if (!TryFindPathUnder(line, sourceRoot, out string raw, out int rootLength)) return false;
 
-        path = candidate;
+        // A trailing separator marks a directory, which has no contents of its own to overwrite.
+        if (raw.EndsWith(Path.DirectorySeparatorChar) || raw.EndsWith(Path.AltDirectorySeparatorChar)) return false;
+        if (raw.Length <= rootLength) return false;
+
+        path = raw;
         return true;
     }
 }

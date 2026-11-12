@@ -137,36 +137,56 @@ public sealed class SyncEngine
                     // and then to move the files aside.
                     var doomed = await FindDeletionsAsync(pass.From, pass.To, ct);
 
-                    if (StoppedByGuard(pass.To, doomed.Files, out string guardReason))
+                    string? stop = doomed.Failure is { } listFailure
+                        ? $"could not check what this mirror would delete ({listFailure})"
+                        : StoppedByGuard(pass.To, doomed.Files, out string guardReason) ? guardReason : null;
+
+                    if (stop is not null)
                     {
-                        Emit($"    STOPPED: {guardReason}");
+                        Emit($"    STOPPED: {stop}");
                         Emit("    Nothing was deleted or copied for this pair. Check the sending folder, "
                            + "then sync again. (Adjust or switch this off with GuardLargeDeletions in config.json.)");
-                        outcome.Success = false;
-                        outcome.Summary = guardReason;
-                        outcome.Note = guardReason;
-                        result.Success = false;
+                        Fail(outcome, result, stop);
                         break;      // leave this pair completely untouched
                     }
 
                     if (_config.RecycleDeletedFiles)
-                        outcome.FilesRecycled += await RecycleAsync(doomed.All, pass.To, ct);
+                    {
+                        var (moved, stuck) = await RecycleAsync(doomed.All, pass.To, ct);
+                        outcome.FilesRecycled += moved;
+                        // The copy pass below does not purge while recycling is on, so anything that
+                        // could not be moved aside simply stays put - but the pair is not in step.
+                        if (stuck > 0)
+                            Fail(outcome, result, $"{stuck} item(s) that the mirror would remove could not be "
+                                                + "moved aside, so they were left in place");
+                    }
                 }
 
                 // Two-way: the copy that loses to a newer version on the other side would otherwise
-                // be overwritten and gone, so keep it alongside the deletions.
+                // be overwritten and gone, so keep it alongside the deletions. If it cannot be kept,
+                // the pass is not run: an overwrite is the one change here that nothing can undo.
                 if (!listOnly && pass.SkipOlder && _config.KeepsReplacedVersions)
-                    outcome.FilesBackedUp += await BackupOverwritesAsync(pass.From, pass.To, ct);
+                {
+                    var (kept, backupProblem) = await BackupOverwritesAsync(pass.From, pass.To, ct);
+                    outcome.FilesBackedUp += kept;
+                    if (backupProblem is not null)
+                    {
+                        Emit($"    STOPPED: {backupProblem}. This direction was not synced, so nothing was overwritten.");
+                        Fail(outcome, result, backupProblem);
+                        continue;
+                    }
+                }
 
                 var tr = await RunRobocopyAsync(pass, ct, listOnly);
                 outcome.FilesCopied += tr.FilesCopied;
                 outcome.FilesFailed += tr.FilesFailed;
                 outcome.ExitCode = Math.Max(outcome.ExitCode, tr.ExitCode);
-                outcome.Summary = tr.Summary;
+                outcome.Summary = string.IsNullOrEmpty(outcome.Note) ? tr.Summary : outcome.Note;
                 if (!tr.Success) outcome.Success = false;
 
-                if (!listOnly && pass.Mirror && _config.RecycleDeletedFiles)
-                    PruneRecycleFolder(pass.To);
+                // Every pass that writes can leave batches behind - mirror deletions and two-way
+                // previous versions alike - so every one of them applies the retention.
+                if (!listOnly) PruneRecycleFolder(pass.To);
             }
 
             result.Targets.Add(outcome);
@@ -185,6 +205,14 @@ public sealed class SyncEngine
         Emit("");
         Emit($"===== {verb} {(result.Success ? "completed" : "completed WITH ERRORS")} {DateTime.Now:yyyy-MM-dd HH:mm:ss} =====");
         return result;
+    }
+
+    private static void Fail(TargetResult outcome, SyncResult result, string why)
+    {
+        outcome.Success = false;
+        outcome.Summary = why;
+        outcome.Note = string.IsNullOrEmpty(outcome.Note) ? why : outcome.Note + "; " + why;
+        result.Success = false;
     }
 
     private static string AsciiDirection(SyncPair pair) => pair.Direction switch
@@ -216,23 +244,37 @@ public sealed class SyncEngine
     private static string Leaf(string path) =>
         Path.GetFileName(path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar));
 
-    private string RecycleRoot(string dst) => Path.Combine(dst, _config.RecycleFolderName);
+    /// <summary>
+    /// The recycle folder inside <paramref name="folder"/>. Uses the validated name, so a hand-edited
+    /// "RecycleFolderName": ".." can never point the recycle folder - and its pruning - outside the pair.
+    /// </summary>
+    private string RecycleRoot(string folder) => Path.Combine(folder, _config.SafeRecycleFolderName);
+
+    /// <summary>
+    /// Quotes a path for robocopy's command line. A trailing backslash has to be doubled: robocopy reads
+    /// \" as a literal quote, so "E:\" swallowed the closing quote and the whole command failed (exit 16)
+    /// - a pair whose folder was a drive root could never sync.
+    /// </summary>
+    public static string Quote(string path) =>
+        "\"" + (path.EndsWith('\\') ? path + "\\" : path) + "\"";
 
     /// <summary>Builds the /XF (file patterns) and /XD (folders) exclusion arguments.</summary>
-    private string BuildExclusionArgs(string dst)
+    private string BuildExclusionArgs(string src, string dst)
     {
         var sb = new StringBuilder();
 
         var files = (_config.ExcludeFiles ?? new List<string>())
             .Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
         if (files.Count > 0)
-            sb.Append(" /XF ").AppendJoin(' ', files.Select(f => $"\"{f}\""));
+            sb.Append(" /XF ").AppendJoin(' ', files.Select(Quote));
 
         var dirs = (_config.ExcludeFolders ?? new List<string>())
             .Where(s => !string.IsNullOrWhiteSpace(s)).Select(s => s.Trim()).ToList();
-        // Always keep the recycle folder out of the mirror, otherwise /MIR would purge the backups.
+        // Always keep both recycle folders out of the copy. The receiving side's, or /MIR would purge the
+        // backups; the sending side's, or a two-way pair copied each side's recycled files into the other.
         dirs.Add(RecycleRoot(dst));
-        sb.Append(" /XD ").AppendJoin(' ', dirs.Select(d => $"\"{d}\""));
+        dirs.Add(RecycleRoot(src));
+        sb.Append(" /XD ").AppendJoin(' ', dirs.Select(Quote));
 
         return sb.ToString();
     }
@@ -241,17 +283,23 @@ public sealed class SyncEngine
     {
         string src = pass.From, dst = pass.To;
 
-        // /MIR  = mirror (copy + purge extras) ; for additive we use /E (copy subdirs incl. empty)
+        // /MIR  = mirror (copy + purge extras) ; /E = copy subdirs incl. empty, never deletes
         // /R:2 /W:2 = 2 retries, 2s wait      ; /MT:16 = 16 threads
         // /FFT  = relaxed (2s) timestamp compare, friendlier to cloud-sync drives
         // /XJ   = skip junctions (avoids loops) ; /NP = no per-file percent (cleaner log)
         // /NDL  = no dir listing                 ; /L = list only (preview, makes no changes)
         // /XO   = never overwrite a newer file at the destination. This is what makes a two-way
         //         pair resolve to "newer file wins" when run once in each direction.
-        string copyMode = pass.Mirror ? "/MIR" : "/E";
+        //
+        // A mirror with recycling on does not purge here: everything it would delete has already been
+        // moved aside, and anything that could not be (a locked file, a name the listing could not
+        // represent) must stay rather than be deleted outright. Preview still uses /MIR so it lists
+        // what the mirror will remove.
+        bool purge = pass.Mirror && (listOnly || !_config.RecycleDeletedFiles);
+        string copyMode = purge ? "/MIR" : "/E";
         string listFlag = listOnly ? " /L" : "";
         string skipOlder = pass.SkipOlder ? " /XO" : "";
-        string args = $"\"{src}\" \"{dst}\" {copyMode} /R:2 /W:2 /MT:16 /FFT /XJ /NP /NDL{listFlag}{skipOlder}{BuildExclusionArgs(dst)}";
+        string args = $"{Quote(src)} {Quote(dst)} {copyMode} /R:2 /W:2 /MT:16 /FFT /XJ /NP /NDL{listFlag}{skipOlder}{BuildExclusionArgs(src, dst)}";
 
         var tr = new TargetResult { Destination = dst };
         var summary = new StringBuilder();
@@ -281,38 +329,44 @@ public sealed class SyncEngine
     /// File count only. robocopy lists an extra folder <em>and</em> each file inside it, so this is the
     /// true number of files at risk — the figure the guard needs, without walking the tree again.
     /// </param>
-    private readonly record struct Deletions(List<string> All, int Files);
+    /// <param name="Failure">Why the listing could not be made, or null. A mirror must not run blind.</param>
+    private readonly record struct Deletions(List<string> All, int Files, string? Failure);
 
     /// <summary>
     /// Finds what a mirror would delete from the destination (robocopy's "*EXTRA" entries),
     /// using a list-only pass so nothing is changed yet.
+    ///
+    /// A failed listing used to be logged as a warning and treated as "nothing to delete", which let the
+    /// mirror go ahead with no guard and nothing moved aside. It is now reported, and the pair stops.
     /// </summary>
     private async Task<Deletions> FindDeletionsAsync(string src, string dst, CancellationToken ct)
     {
         // /NJH /NJS strip the header/summary so only the item lines remain.
         // /NDL is essential: without it robocopy prints directory headers followed by bare file
         // names, and the full path needed below is missing for files (directories always show one).
-        string args = $"\"{src}\" \"{dst}\" /MIR /L /R:0 /W:0 /FFT /XJ /NP /NDL /NJH /NJS{BuildExclusionArgs(dst)}";
+        string args = $"{Quote(src)} {Quote(dst)} /MIR /L /R:0 /W:0 /FFT /XJ /NP /NDL /NJH /NJS{BuildExclusionArgs(src, dst)}";
         var all = new List<string>();
         int files = 0;
 
         try
         {
-            await RunRobocopyProcessAsync(args, line =>
+            int exit = await RunRobocopyListAsync(args, line =>
             {
                 if (!RobocopyOutput.TryParseExtraPath(line, dst, out var path)) return;
                 all.Add(path);
                 if (RobocopyOutput.IsExtraFile(line)) files++;
             }, ct);
+
+            // 16 is robocopy's "serious error, nothing done" - the listing is not to be trusted.
+            if (exit >= 16) return new Deletions(all, files, $"robocopy exit {exit}");
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Emit($"    WARNING: could not check for deletions: {ex.Message}");
-            return new Deletions(new List<string>(), 0);
+            return new Deletions(new List<string>(), 0, ex.Message);
         }
 
-        return new Deletions(all, files);
+        return new Deletions(all, files, null);
     }
 
     /// <summary>
@@ -324,7 +378,7 @@ public sealed class SyncEngine
         reason = "";
         if (!_config.GuardLargeDeletions || filesToDelete <= 0) return false;
 
-        int atDestination = DeletionGuard.CountFiles(dst, _config.RecycleFolderName);
+        int atDestination = DeletionGuard.CountFiles(dst, _config.SafeRecycleFolderName);
         if (atDestination == DeletionGuard.Uncountable)
         {
             // Not knowing how much is there is no reason to assume deleting it is fine.
@@ -346,39 +400,44 @@ public sealed class SyncEngine
     /// destroyed with no record, and unlike a deletion there is nothing left to restore from.
     ///
     /// Copies rather than moves: the file has to stay where it is for robocopy to overwrite it.
+    ///
+    /// Returns how many were kept, and a problem when some could not be - in which case the caller does
+    /// not run the pass, rather than overwrite a file whose previous version is not safe.
     /// </summary>
-    private async Task<int> BackupOverwritesAsync(string src, string dst, CancellationToken ct)
+    private async Task<(int kept, string? problem)> BackupOverwritesAsync(string src, string dst, CancellationToken ct)
     {
         // Same flags as the real pass, so this sees exactly the files that pass will replace.
-        string args = $"\"{src}\" \"{dst}\" /E /L /XO /R:0 /W:0 /FFT /XJ /NP /NDL /NJH /NJS{BuildExclusionArgs(dst)}";
+        string args = $"{Quote(src)} {Quote(dst)} /E /L /XO /R:0 /W:0 /FFT /XJ /NP /NDL /NJH /NJS{BuildExclusionArgs(src, dst)}";
         var overwritten = new List<string>();
 
         try
         {
-            await RunRobocopyProcessAsync(args, line =>
+            int exit = await RunRobocopyListAsync(args, line =>
             {
-                // "Newer" means the destination holds an older copy of this file. "New File" does not
-                // exist there at all and so overwrites nothing.
+                // Any file about to be copied - "Newer" and "Changed" alike. Whether it really replaces
+                // something is decided below, by whether the destination already has it.
                 if (RobocopyOutput.TryParseOverwrittenSourcePath(line, src, out var sourcePath))
                     overwritten.Add(sourcePath);
             }, ct);
+            if (exit >= 16) return (0, $"could not check which files would be overwritten (robocopy exit {exit})");
         }
         catch (OperationCanceledException) { throw; }
         catch (Exception ex)
         {
-            Emit($"    WARNING: could not check for overwrites: {ex.Message}");
-            return 0;
+            return (0, $"could not check which files would be overwritten ({ex.Message})");
         }
 
-        if (overwritten.Count == 0) return 0;
+        if (overwritten.Count == 0) return (0, null);
 
         // Deliberately a separate batch from the deletions, marked with a suffix. These files were
         // *replaced*, not deleted: putting the old copy back is a rollback that undoes the merge,
         // whereas restoring a deletion is a recovery. Filing them together would tell the Recycled
         // files page the wrong story about both.
         string trashRoot = Path.Combine(
-            RecycleRoot(dst), DateTime.Now.ToString("yyyyMMdd-HHmmss") + RecycleStore.ReplacedSuffix);
-        int kept = 0;
+            RecycleRoot(dst),
+            DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture)
+            + RecycleStore.ReplacedSuffix);
+        int kept = 0, notKept = 0;
 
         foreach (var sourcePath in overwritten)
         {
@@ -387,7 +446,7 @@ public sealed class SyncEngine
             {
                 string relative = Path.GetRelativePath(src, sourcePath);
                 string existing = Path.Combine(dst, relative);
-                if (!File.Exists(existing)) continue;      // vanished between the check and now
+                if (!File.Exists(existing)) continue;      // a new file: nothing there to overwrite
 
                 string backup = Path.Combine(trashRoot, relative);
                 Directory.CreateDirectory(Path.GetDirectoryName(backup)!);
@@ -396,6 +455,7 @@ public sealed class SyncEngine
             }
             catch (Exception ex)
             {
+                notKept++;
                 Emit($"    WARNING: could not keep the previous version of '{sourcePath}': {ex.Message}");
             }
         }
@@ -407,20 +467,24 @@ public sealed class SyncEngine
             Emit("    (A two-way pair cannot tell a genuine conflict from an ordinary update without a "
                + "record of the previous run, so every replaced file is kept.)");
         }
-        return kept;
+        return notKept > 0
+            ? (kept, $"the previous version of {notKept} file(s) could not be kept")
+            : (kept, null);
     }
 
     /// <summary>
     /// Moves everything a mirror is about to purge into "&lt;destination&gt;\_FolderSyncTrash\&lt;timestamp&gt;",
     /// preserving relative paths, so an accidental source deletion stays recoverable.
     /// </summary>
-    private async Task<int> RecycleAsync(List<string> extras, string dst, CancellationToken ct)
+    /// <returns>How many items were moved aside, and how many could not be (those stay in place).</returns>
+    private async Task<(int moved, int stuck)> RecycleAsync(List<string> extras, string dst, CancellationToken ct)
     {
-        if (extras.Count == 0) return 0;
+        if (extras.Count == 0) return (0, 0);
         await Task.CompletedTask;   // keeps the call site uniform with the other async steps
 
-        string trashRoot = Path.Combine(RecycleRoot(dst), DateTime.Now.ToString("yyyyMMdd-HHmmss"));
-        int moved = 0;
+        string trashRoot = Path.Combine(RecycleRoot(dst),
+            DateTime.Now.ToString("yyyyMMdd-HHmmss", System.Globalization.CultureInfo.InvariantCulture));
+        int moved = 0, stuck = 0;
 
         // Shallowest first: moving a parent folder brings its children along, so deeper
         // entries simply no longer exist by the time we reach them.
@@ -441,16 +505,23 @@ public sealed class SyncEngine
             }
             catch (Exception ex)
             {
-                Emit($"    WARNING: could not move aside '{path}': {ex.Message}");
+                stuck++;
+                Emit($"    WARNING: could not move aside '{path}' - it was left in place: {ex.Message}");
             }
         }
 
         if (moved > 0)
             Emit($"    Recycled {moved} item(s) that mirror would have deleted -> {trashRoot}");
-        return moved;
+        return (moved, stuck);
     }
 
-    /// <summary>Deletes recycled batches older than the configured retention.</summary>
+    /// <summary>
+    /// Deletes recycled batches older than the configured retention.
+    ///
+    /// Only folders whose names are batch timestamps are ever touched, and their age is read from that
+    /// name. Anything else in the folder - put there by hand, or the result of a misconfigured recycle
+    /// folder name - is left alone: a clean-up must never be able to delete something it did not create.
+    /// </summary>
     private void PruneRecycleFolder(string dst)
     {
         try
@@ -459,15 +530,50 @@ public sealed class SyncEngine
             if (!Directory.Exists(root)) return;
 
             var cutoff = DateTime.Now.AddDays(-Math.Max(1, _config.RecycleRetentionDays));
-            foreach (var dir in Directory.EnumerateDirectories(root))
+            foreach (var dir in Directory.EnumerateDirectories(root).ToList())
             {
-                try { if (Directory.GetCreationTime(dir) < cutoff) Directory.Delete(dir, recursive: true); }
+                var made = RecycleStore.ParseBatchTimestamp(Path.GetFileName(dir));
+                if (made == default) continue;              // not one of ours
+                try { if (made < cutoff) Directory.Delete(dir, recursive: true); }
                 catch { /* skip what we can't remove */ }
             }
             // Tidy up if the recycle folder is now empty.
             try { if (!Directory.EnumerateFileSystemEntries(root).Any()) Directory.Delete(root); } catch { }
         }
         catch { /* pruning is best-effort */ }
+    }
+
+    /// <summary>
+    /// Runs a list-only robocopy pass whose output is <em>acted on</em>, passing each line to
+    /// <paramref name="onLine"/>; returns robocopy's exit code.
+    ///
+    /// <para>The output goes through a UTF-16 log file (/UNILOG) rather than the console pipe. Console
+    /// output is in the OEM code page, which cannot represent every file name: "café.txt" came back
+    /// with a replacement character, did not exist under that name, and so was skipped when moving
+    /// files aside - after which the mirror deleted it for good. The log file is exact.</para>
+    /// </summary>
+    private static async Task<int> RunRobocopyListAsync(string args, Action<string> onLine, CancellationToken ct)
+    {
+        string log = Path.Combine(Path.GetTempPath(), $"foldersync-list-{Guid.NewGuid():N}.log");
+        try
+        {
+            // With /UNILOG the console only reports where the log is, so its lines are not needed.
+            int exit = await RunRobocopyProcessAsync($"{args} /UNILOG:{Quote(log)}", _ => { }, ct);
+
+            if (File.Exists(log))
+            {
+                foreach (var raw in File.ReadLines(log, Encoding.Unicode))
+                {
+                    var line = raw.TrimEnd();
+                    if (line.Length > 0) onLine(line);
+                }
+            }
+            return exit;
+        }
+        finally
+        {
+            try { File.Delete(log); } catch { /* a stray temp file is harmless */ }
+        }
     }
 
     /// <summary>Runs robocopy, streaming each output line to <paramref name="onLine"/>; returns its exit code.</summary>
@@ -481,8 +587,10 @@ public sealed class SyncEngine
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
-            StandardOutputEncoding = Encoding.UTF8,
-            StandardErrorEncoding = Encoding.UTF8,
+            // robocopy writes the OEM code page to a pipe. These lines are only logged, never acted on
+            // (see RunRobocopyListAsync for the ones that are), so OEM is right for readable logs.
+            StandardOutputEncoding = ConsoleEncoding.Oem,
+            StandardErrorEncoding = ConsoleEncoding.Oem,
         };
 
         using var proc = new Process { StartInfo = psi };

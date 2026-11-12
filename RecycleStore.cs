@@ -98,7 +98,7 @@ public static class RecycleStore
             // which would lose every other pair's batches along with it.
             if (string.IsNullOrWhiteSpace(place.folder)) continue;
             string root;
-            try { root = Path.Combine(place.folder, config.RecycleFolderName ?? ""); }
+            try { root = Path.Combine(place.folder, config.SafeRecycleFolderName); }
             catch { continue; }
             if (!SafeDirectoryExists(root)) continue;
 

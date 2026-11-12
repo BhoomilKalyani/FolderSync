@@ -50,6 +50,62 @@ public class RobocopyOutputTests
     }
 
     [Fact]
+    public void A_changed_file_counts_as_an_overwrite_too()
+    {
+        // Same timestamp, different size. Only "Newer" used to count, so this copy was replaced with
+        // no previous version kept.
+        const string line = "\t    Changed   \t\t      27\tC:\\src\\Docs\\same-time.txt";
+
+        Assert.True(RobocopyOutput.TryParseOverwrittenSourcePath(line, @"C:\src\Docs", out string path));
+        Assert.Equal(@"C:\src\Docs\same-time.txt", path);
+    }
+
+    [Fact]
+    public void The_overwrite_check_does_not_depend_on_the_english_label()
+    {
+        // Labels are translated on non-English Windows. Whether a file really is overwritten is decided
+        // by the engine checking the destination copy exists, so any listed file line is a candidate.
+        const string line = "\t    Neuer     \t\t      16\tC:\\src\\Docs\\shared.txt";
+
+        Assert.True(RobocopyOutput.TryParseOverwrittenSourcePath(line, @"C:\src\Docs", out _));
+    }
+
+    [Fact]
+    public void A_sibling_folder_with_a_name_that_starts_the_same_is_not_mistaken_for_the_root()
+    {
+        // "C:\src\Docs" is a prefix of "C:\src\Docs2". Matching the bare root picked up its lines.
+        const string sibling = "\t    Newer     \t\t      16\tC:\\src\\Docs2\\other.txt";
+        const string extra = "\t  *EXTRA File \t\t     17\tC:\\dest\\Docs2\\a.txt";
+
+        Assert.False(RobocopyOutput.TryParseOverwrittenSourcePath(sibling, @"C:\src\Docs", out _));
+        Assert.False(RobocopyOutput.TryParseExtraPath(extra, Dst, out _));
+    }
+
+    [Fact]
+    public void A_directory_line_is_not_an_overwrite()
+    {
+        const string line = "\t    New Dir          2\tC:\\src\\Docs\\folder\\";
+
+        Assert.False(RobocopyOutput.TryParseOverwrittenSourcePath(line, @"C:\src\Docs", out _));
+    }
+
+    [Fact]
+    public void A_drive_root_works_as_the_root()
+    {
+        Assert.True(RobocopyOutput.TryParseExtraPath("\t  *EXTRA File \t\t 5\tE:\\a.txt", @"E:\", out string path));
+        Assert.Equal(@"E:\a.txt", path);
+    }
+
+    [Theory]
+    [InlineData(@"C:\Docs", "\"C:\\Docs\"")]
+    [InlineData(@"E:\", "\"E:\\\\\"")]                    // the trailing \ doubled so it cannot escape the quote
+    [InlineData(@"C:\Docs\", "\"C:\\Docs\\\\\"")]
+    public void Paths_are_quoted_so_a_trailing_backslash_cannot_escape_the_quote(string path, string expected)
+    {
+        Assert.Equal(expected, SyncEngine.Quote(path));
+    }
+
+    [Fact]
     public void A_path_is_found_even_when_the_size_column_uses_two_tokens()
     {
         // robocopy prints large sizes as "1.7 m", which is why the path is located by searching for
