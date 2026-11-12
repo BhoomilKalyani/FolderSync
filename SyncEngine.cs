@@ -155,7 +155,7 @@ public sealed class SyncEngine
 
                 // Two-way: the copy that loses to a newer version on the other side would otherwise
                 // be overwritten and gone, so keep it alongside the deletions.
-                if (!listOnly && pass.SkipOlder && _config.BackupOverwrittenFiles && _config.RecycleDeletedFiles)
+                if (!listOnly && pass.SkipOlder && _config.KeepsReplacedVersions)
                     outcome.FilesBackedUp += await BackupOverwritesAsync(pass.From, pass.To, ct);
 
                 var tr = await RunRobocopyAsync(pass, ct, listOnly);
@@ -325,6 +325,13 @@ public sealed class SyncEngine
         if (!_config.GuardLargeDeletions || filesToDelete <= 0) return false;
 
         int atDestination = DeletionGuard.CountFiles(dst, _config.RecycleFolderName);
+        if (atDestination == DeletionGuard.Uncountable)
+        {
+            // Not knowing how much is there is no reason to assume deleting it is fine.
+            reason = $"this would delete {filesToDelete:N0} file(s), but the receiving side could not be read "
+                   + "to check whether that is a sensible share of it";
+            return true;
+        }
 
         return DeletionGuard.ShouldStop(
             filesToDelete, atDestination,

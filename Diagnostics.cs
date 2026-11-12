@@ -100,20 +100,28 @@ public static class Diagnostics
         // whole destination, so its state belongs in a health report.
         if (pairs.Any(p => p.Enabled && p.DeletesExtras))
         {
+            // Worded to match DeletionGuard.ShouldStop exactly: the share is "or more", the minimum is
+            // floored at 1, and a receiving side that cannot be counted stops the mirror too.
             if (config.GuardLargeDeletions)
-                Line(sb, "OK", $"Large-deletion guard: on - a mirror stops if it would remove over "
-                             + $"{config.LargeDeletionPercent}% of the receiving side "
-                             + $"(and at least {config.LargeDeletionMinimumFiles} files).");
+                Line(sb, "OK", $"Large-deletion guard: on - a mirror stops if it would remove "
+                             + $"{Math.Clamp(config.LargeDeletionPercent, 1, 100)}% or more of the receiving side "
+                             + $"(and at least {Math.Max(1, config.LargeDeletionMinimumFiles)} files), or if the "
+                             + "receiving side cannot be read to check.");
             else
                 Line(sb, "WARN", "Large-deletion guard: OFF - a mirror will delete whatever the sending "
                                + "side no longer has, however much that is.");
         }
 
         if (pairs.Any(p => p.Enabled && p.Direction == SyncDirection.TwoWay))
-            Line(sb, config.BackupOverwrittenFiles ? "OK" : "WARN",
-                 config.BackupOverwrittenFiles
-                     ? "Two-way overwrites: the replaced version is kept and can be rolled back."
-                     : "Two-way overwrites: the replaced version is NOT kept - the older copy is lost.");
+        {
+            if (config.KeepsReplacedVersions)
+                Line(sb, "OK", "Two-way overwrites: the replaced version is kept and can be rolled back.");
+            else if (config.BackupOverwrittenFiles)
+                Line(sb, "WARN", "Two-way overwrites: the replaced version is NOT kept, because "
+                               + "RecycleDeletedFiles is off and the kept versions are stored in the recycle folder.");
+            else
+                Line(sb, "WARN", "Two-way overwrites: the replaced version is NOT kept - the older copy is lost.");
+        }
 
         var patterns = (config.ExcludeFiles ?? new()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();
         var folders = (config.ExcludeFolders ?? new()).Where(s => !string.IsNullOrWhiteSpace(s)).ToList();

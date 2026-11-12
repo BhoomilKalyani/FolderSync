@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text;
 
 namespace FolderSync;
@@ -35,6 +36,25 @@ public static class ScheduleManager
             || p.Contains(@"\bin\Release\", StringComparison.OrdinalIgnoreCase);
     }
 
+    [DllImport("kernel32.dll")]
+    private static extern uint GetOEMCP();
+
+    /// <summary>
+    /// The encoding schtasks writes when its output is redirected: the OEM code page (437 or 850 on
+    /// most Western systems). Left unset, .NET decodes it as the ANSI code page in this console-less
+    /// app, which turned "José" in an install path into "Jos‚" - so every schedule read as pointing at
+    /// a missing program.
+    /// </summary>
+    private static readonly Lazy<Encoding> OemEncoding = new(() =>
+    {
+        try
+        {
+            Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+            return Encoding.GetEncoding((int)GetOEMCP());
+        }
+        catch { return Encoding.Default; }
+    });
+
     private static (int code, string output) Run(string args)
     {
         var psi = new ProcessStartInfo
@@ -45,6 +65,8 @@ public static class ScheduleManager
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             CreateNoWindow = true,
+            StandardOutputEncoding = OemEncoding.Value,
+            StandardErrorEncoding = OemEncoding.Value,
         };
         using var p = Process.Start(psi)!;
 

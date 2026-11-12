@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -74,28 +75,50 @@ public static class Updater
     }
 
     /// <summary>
-    /// Queries the latest release. Returns null when already up to date, when the repo has no
-    /// releases yet, or when the check fails (offline) — callers treat null as "nothing to do".
+    /// Queries the latest release. Returns null only when GitHub actually answered that there is nothing
+    /// newer (or no release yet). Anything else - offline, rate-limited, a server error - throws, so it
+    /// is reported as "could not check" rather than as "you're up to date".
+    ///
+    /// The check is recorded only once GitHub has answered: recording it up front meant a failed check
+    /// also switched off the automatic one for the next 24 hours.
     /// </summary>
     public static async Task<UpdateInfo?> CheckAsync(SyncConfig config, CancellationToken ct = default)
     {
-        RecordCheck();
-
         string repo = string.IsNullOrWhiteSpace(config.UpdateRepo) ? SyncConfig.DefaultUpdateRepo : config.UpdateRepo.Trim();
         string url = $"https://api.github.com/repos/{repo}/releases/latest";
 
+        var info = await QueryLatestAsync(url, config.IncludePrereleaseUpdates, CurrentVersion, ct);
+        RecordCheck();
+        return info;
+    }
+
+    /// <summary>
+    /// The release query itself, against any URL and version, so it can be tested against a local server
+    /// without touching the real check-time record.
+    /// </summary>
+    public static async Task<UpdateInfo?> QueryLatestAsync(string url, bool includePrerelease, Version current,
+                                                           CancellationToken ct = default)
+    {
         using var resp = await Http.GetAsync(url, ct);
-        if (!resp.IsSuccessStatusCode) return null;      // 404 = no releases published yet
+
+        // 404 is a real answer: the repository has no published release yet.
+        if (resp.StatusCode == HttpStatusCode.NotFound) return null;
+        if (!resp.IsSuccessStatusCode)
+        {
+            int code = (int)resp.StatusCode;
+            string hint = code is 403 or 429 ? " - GitHub's limit on update checks was reached; try again later" : "";
+            throw new HttpRequestException($"GitHub answered {code} {resp.ReasonPhrase}{hint}.", null, resp.StatusCode);
+        }
 
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var root = doc.RootElement;
 
         if (root.TryGetProperty("draft", out var draft) && draft.GetBoolean()) return null;
-        if (root.TryGetProperty("prerelease", out var pre) && pre.GetBoolean() && !config.IncludePrereleaseUpdates) return null;
+        if (root.TryGetProperty("prerelease", out var pre) && pre.GetBoolean() && !includePrerelease) return null;
 
         string tag = root.TryGetProperty("tag_name", out var t) ? t.GetString() ?? "" : "";
         var latest = ParseVersion(tag);
-        if (latest is null || latest <= CurrentVersion) return null;
+        if (latest is null || latest <= current) return null;
 
         string? setupUrl = null;
         long setupSize = 0;
@@ -158,38 +181,49 @@ public static class Updater
         Directory.CreateDirectory(dir);
         string file = Path.Combine(dir, $"FolderSyncSetup-{info.Version}.exe");
 
-        using var resp = await Http.GetAsync(info.SetupUrl, HttpCompletionOption.ResponseHeadersRead, ct);
-        resp.EnsureSuccessStatusCode();
-
-        long total = resp.Content.Headers.ContentLength ?? info.SetupSize;
-        long written = 0;
-
-        await using (var src = await resp.Content.ReadAsStreamAsync(ct))
-        await using (var dst = File.Create(file))
+        // Downloaded under a ".part" name and only renamed once complete: this file is about to be
+        // executed, so a truncated installer must never sit under the name that gets run. Any failure -
+        // including a connection that drops mid-transfer, which throws before the size check below
+        // could ever run - deletes it.
+        string part = file + ".part";
+        try
         {
-            var buffer = new byte[81920];
-            int read;
-            while ((read = await src.ReadAsync(buffer, ct)) > 0)
+            using var resp = await Http.GetAsync(info.SetupUrl, HttpCompletionOption.ResponseHeadersRead, ct);
+            resp.EnsureSuccessStatusCode();
+
+            // This response's own length is the authority. The size cached when the update was found can
+            // be stale - the release workflow replaces an installer in place - and preferring it rejected
+            // complete downloads as incomplete.
+            long? announced = resp.Content.Headers.ContentLength;
+            long expected = announced ?? info.SetupSize;
+            long written = 0;
+
+            await using (var src = await resp.Content.ReadAsStreamAsync(ct))
+            await using (var dst = File.Create(part))
             {
-                await dst.WriteAsync(buffer.AsMemory(0, read), ct);
-                written += read;
-                if (total > 0) progress?.Report((int)(written * 100 / total));
+                var buffer = new byte[81920];
+                int read;
+                while ((read = await src.ReadAsync(buffer, ct)) > 0)
+                {
+                    await dst.WriteAsync(buffer.AsMemory(0, read), ct);
+                    written += read;
+                    if (expected > 0) progress?.Report((int)Math.Min(100, written * 100 / expected));
+                }
             }
-        }
 
-        // This file is about to be executed, so a partial download must not reach that point. A
-        // connection dropped mid-transfer otherwise leaves a truncated installer that Windows will
-        // still happily launch.
-        long expected = info.SetupSize > 0 ? info.SetupSize : total;
-        if (expected > 0 && written != expected)
+            if (expected > 0 && written != expected)
+                throw new IOException(
+                    $"The download is incomplete ({Humanise.Size(written)} of {Humanise.Size(expected)}). "
+                    + "Nothing has been installed — check your connection and try again.");
+
+            File.Move(part, file, overwrite: true);
+            return file;
+        }
+        catch
         {
-            TryDelete(file);
-            throw new IOException(
-                $"The download is incomplete ({Humanise.Size(written)} of {Humanise.Size(expected)}). "
-                + "Nothing has been installed — check your connection and try again.");
+            TryDelete(part);
+            throw;
         }
-
-        return file;
     }
 
     private static void TryDelete(string path)

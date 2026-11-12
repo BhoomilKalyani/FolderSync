@@ -92,7 +92,20 @@ internal static class Program
         });
         ThemeManager.Apply(AppTheme.System);
 
-        var window = new MainWindow();
+        MainWindow window;
+        try
+        {
+            window = new MainWindow();
+        }
+        catch (ConfigUnavailableException ex)
+        {
+            // Opening on defaults here would let the next save overwrite the user's real settings.
+            AppendEvent("[Config] window not opened: " + ex.Message);
+            System.Windows.MessageBox.Show(
+                ex.Message + "\n\nAnother program may be using it. Close that program and start Folder Sync again.",
+                "Folder Sync", System.Windows.MessageBoxButton.OK, System.Windows.MessageBoxImage.Warning);
+            return 1;
+        }
         app.MainWindow = window;
         return app.Run(window);
     }
@@ -104,7 +117,21 @@ internal static class Program
     /// </param>
     private static int RunHeadless(bool auto = false)
     {
-        var config = SyncConfig.Load();
+        SyncConfig config;
+        try
+        {
+            config = SyncConfig.Load();
+        }
+        catch (ConfigUnavailableException ex)
+        {
+            // The settings exist but could not be opened. Running on defaults would sync nothing and
+            // report success, so fail instead, and leave the file exactly as it is.
+            return FailBeforeSync($"{ex.Message}\nNothing was synced, and the settings file was left untouched.");
+        }
+
+        if (config.LoadProblem is { } problem)
+            return FailBeforeSync($"{problem}\nNothing was synced. Restore the kept copy, or set the folder "
+                                + "pairs up again in the Folder Sync window.");
 
         if (auto && config.MinMinutesBetweenAutoSyncs > 0)
         {
@@ -148,6 +175,18 @@ internal static class Program
         TrySendEmail(config, result, logPath);
 
         return (result.Success && !fatal) ? 0 : 1;
+    }
+
+    /// <summary>
+    /// Records a scheduled run that could not start, so the failure shows in the log folder, the events
+    /// log and the window's last-sync card rather than vanishing. Returns the failing exit code.
+    /// </summary>
+    private static int FailBeforeSync(string why)
+    {
+        AppendEvent("[Sync] not run: " + why.Replace('\n', ' '));
+        try { File.WriteAllText(SyncConfig.NewSyncLogPath(), "FATAL: " + why + Environment.NewLine); } catch { }
+        LastRun.Save(new SyncResult { Success = false });
+        return 1;
     }
 
     private static bool Has(string[] args, string flag) =>

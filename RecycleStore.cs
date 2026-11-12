@@ -94,11 +94,18 @@ public static class RecycleStore
 
         foreach (var place in places)
         {
-            string root = Path.Combine(place.folder, config.RecycleFolderName);
+            // A blank or malformed path (a hand-edited config) is skipped rather than allowed to throw,
+            // which would lose every other pair's batches along with it.
+            if (string.IsNullOrWhiteSpace(place.folder)) continue;
+            string root;
+            try { root = Path.Combine(place.folder, config.RecycleFolderName ?? ""); }
+            catch { continue; }
             if (!SafeDirectoryExists(root)) continue;
 
-            IEnumerable<string> dirs;
-            try { dirs = Directory.EnumerateDirectories(root); }
+            // Materialised inside the try: enumeration is lazy, so a drive dropping out mid-listing
+            // throws from the loop below, not from this call.
+            List<string> dirs;
+            try { dirs = Directory.EnumerateDirectories(root).ToList(); }
             catch { continue; }
 
             foreach (var dir in dirs)

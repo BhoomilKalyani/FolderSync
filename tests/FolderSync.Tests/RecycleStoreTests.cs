@@ -106,6 +106,31 @@ public class RecycleStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_pair_with_a_missing_folder_does_not_hide_the_other_pairs_batches()
+    {
+        // A null folder made Path.Combine throw, which ended the whole scan; the window's discarded task
+        // then swallowed the exception and the Recycled files page sat on "Looking…" for good.
+        var broken = new SyncPair { Name = "Broken", Right = Dir("x") };
+        typeof(SyncPair).GetField("_left", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+            .SetValue(broken, null);   // what a hand-edited "Left": null deserialised to
+
+        var config = new SyncConfig
+        {
+            RecycleFolderName = "_Trash",
+            Pairs = new List<SyncPair>
+            {
+                broken,
+                new() { Name = "Cloud", Left = Dir("source"), Right = Dir("cloud"), Direction = SyncDirection.ToRight, Mirror = true },
+            },
+        };
+        Dir("cloud", "_Trash", "20260101-100000");
+        File_(@"cloud\_Trash\20260101-100000\a.txt", "aaa");
+
+        var batch = Assert.Single(RecycleStore.GetBatches(config));
+        Assert.StartsWith("Cloud", batch.DestinationName);
+    }
+
+    [Fact]
     public void GetBatches_returns_nothing_when_no_recycle_folder_exists()
     {
         var config = new SyncConfig

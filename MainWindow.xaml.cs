@@ -77,6 +77,11 @@ public partial class MainWindow : Window
 
         Loaded += async (_, _) =>
         {
+            if (_config.LoadProblem is { } problem)
+                MessageWindow.Warn(this, "Settings could not be read",
+                    problem + "\n\nScheduled syncs will report a failure until the folder pairs are set up "
+                    + "again. The settings folder is listed on the About page.");
+
             WarnAboutStaleTaskTargets();
             if (_config.CheckForUpdates && Updater.IsCheckDue())
                 await CheckForUpdatesAsync(manual: false);
@@ -117,11 +122,13 @@ public partial class MainWindow : Window
                 : $"{deleting.Count} pair(s) mirror and deletions are PERMANENT (recycle is off in config.json).";
     }
 
-    private void SyncPairsToConfig()
-    {
-        _config.Pairs.Clear();
-        _config.Pairs.AddRange(_pairs);
-    }
+    /// <summary>
+    /// Copies the grid's pairs into the config as a new list. Never clear-and-refill in place: the health
+    /// check, the recycled-files scan and a sync all read the config's list on a background thread, and
+    /// changing that list under them throws "Collection was modified". A fresh list leaves any reader
+    /// with the one it started on.
+    /// </summary>
+    private void SyncPairsToConfig() => _config.Pairs = _pairs.ToList();
 
     /// <summary>
     /// Fills in each pair's "Last run" column from the stored per-pair history, so a pair that has
@@ -412,6 +419,7 @@ public partial class MainWindow : Window
     {
         SyncButton.IsEnabled = !busy;
         PreviewButton.IsEnabled = !busy;
+        HealthButton.IsEnabled = !busy && !_healthRunning;
         CancelButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         Progress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
     }
@@ -426,34 +434,40 @@ public partial class MainWindow : Window
             return;
         }
 
-        var age = DateTime.Now - last.When;
-        string ago = age.TotalDays >= 1 ? $"{age.TotalDays:0.#} day(s) ago"
-                   : age.TotalHours >= 1 ? $"{age.TotalHours:0.#} hour(s) ago"
-                   : $"{age.TotalMinutes:0} min ago";
-
-        LastRunText.Text = $"{(last.Success ? "Succeeded" : "Completed with errors")} — {last.When:yyyy-MM-dd HH:mm:ss} ({ago})";
+        // The shared formatter, so this card, the pairs grid and the health check describe a run alike.
+        LastRunText.Text = $"{(last.Success ? "Succeeded" : "Completed with errors")} — "
+                         + $"{last.When:yyyy-MM-dd HH:mm:ss} ({Humanise.Ago(last.When)})";
         LastRunText.Foreground = (System.Windows.Media.Brush)FindResource(last.Success ? "Ok" : "Bad");
         LastRunGrid.ItemsSource = last.Destinations;
         LastRunGrid.Visibility = last.Destinations.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
     }
 
+    private bool _healthRunning;
+
     private async void Health_Click(object sender, RoutedEventArgs e)
     {
+        if (_cts is not null || _healthRunning) return;   // a sync or another check is running
         SaveConfig();
 
         // The report launches half a dozen schtasks processes and walks every folder pair, which is
         // long enough to freeze the window if it runs on the UI thread.
-        var button = sender as Button;
-        if (button is not null) button.IsEnabled = false;
-        Status = "Checking…";
+        _healthRunning = true;
+        HealthButton.IsEnabled = false;
+
+        // The status line belongs to the sync: put back whatever it said ("Completed with errors…")
+        // rather than replacing it with "Ready.". Only if nothing else has written to it meanwhile.
+        const string checking = "Checking…";
+        string before = StatusText.Text;
+        Status = checking;
 
         string report;
         try { report = await Task.Run(() => Diagnostics.Run(_config)); }
         catch (Exception ex) { report = "Health check failed: " + ex; }
         finally
         {
-            if (button is not null) button.IsEnabled = true;
-            Status = "Ready.";
+            _healthRunning = false;
+            HealthButton.IsEnabled = _cts is null;
+            if (StatusText.Text == checking) Status = before;
         }
 
         new TextWindow("Health check", "Folder Sync health check", report) { Owner = this }.ShowDialog();
@@ -788,28 +802,59 @@ public partial class MainWindow : Window
 
     private void LoadRecycled() => _ = LoadRecycledAsync();
 
+    /// <summary>Numbers each scan, so only the newest one's result is ever shown.</summary>
+    private int _recycleScan;
+
     /// <summary>
     /// Lists the recycled batches. The scan walks every file of every batch on both sides of every
     /// pair to total up counts and sizes, which is slow enough to stall the window after a month of
     /// retained batches — so it runs off the UI thread.
+    ///
+    /// <para>Scans can overlap (Refresh, opening the page, deleting a batch), and they finish in any
+    /// order, so a result is applied only if no newer scan has started since: otherwise an older scan
+    /// that still listed a just-deleted batch could finish last and bring it back. The old list is
+    /// cleared while scanning, so nothing stale can be restored or deleted in the meantime.</para>
+    ///
+    /// <para>Never throws: callers discard the returned task, so an exception escaping here would be
+    /// lost without a trace and leave the page stuck on "Looking…".</para>
     /// </summary>
     private async Task LoadRecycledAsync()
     {
-        SaveConfig();
+        int scan = ++_recycleScan;
+        RefreshRecycledButton.IsEnabled = false;
 
-        RecycledFileGrid.ItemsSource = null;
-        RecycledFilesTitle.Text = "Files";
-        RestoreMeaningText.Text = "";
-        RestoreStatus.Text = "Looking…";
+        try
+        {
+            SaveConfig();
 
-        var config = _config;
-        _batches = await Task.Run(() => RecycleStore.GetBatches(config));
+            BatchGrid.ItemsSource = null;          // clears the selection, which resets the file list
+            RecycledFileGrid.ItemsSource = null;
+            RecycledFilesTitle.Text = "Files";
+            RestoreMeaningText.Text = "";
+            RestoreStatus.Text = "Looking…";
+            UpdateRestoreButtons();
 
-        BatchGrid.ItemsSource = _batches;
-        RestoreStatus.Text = _batches.Count == 0
-            ? "Nothing has been recycled. Files appear here when a sync would otherwise delete or replace them."
-            : $"{_batches.Count} batch(es) found.";
-        UpdateRestoreButtons();
+            var config = _config;
+            var batches = await Task.Run(() => RecycleStore.GetBatches(config));
+            if (scan != _recycleScan) return;       // a newer scan has started; its result is the one to show
+
+            _batches = batches;
+            BatchGrid.ItemsSource = _batches;
+            RestoreStatus.Text = _batches.Count == 0
+                ? "Nothing has been recycled. Files appear here when a sync would otherwise delete or replace them."
+                : $"{_batches.Count} batch(es) found.";
+            UpdateRestoreButtons();
+        }
+        catch (Exception ex)
+        {
+            if (scan != _recycleScan) return;
+            AppendEvent("[Recycle] could not list recycled files: " + ex);
+            RestoreStatus.Text = "Could not list the recycled files: " + ex.Message;
+        }
+        finally
+        {
+            if (scan == _recycleScan) RefreshRecycledButton.IsEnabled = true;
+        }
     }
 
     private void BatchGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -817,6 +862,7 @@ public partial class MainWindow : Window
         if (BatchGrid.SelectedItem is not RecycleBatch batch)
         {
             RecycledFileGrid.ItemsSource = null;
+            RecycledFilesTitle.Text = "Files";
             RestoreMeaningText.Text = "";
             UpdateRestoreButtons();
             return;

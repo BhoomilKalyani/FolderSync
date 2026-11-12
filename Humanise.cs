@@ -26,8 +26,9 @@ public static class Humanise
     public static string Ago(DateTime when)
     {
         var age = DateTime.Now - when;
+        // Under a minute, Age() already says "just now", which takes no suffix ("just now ago").
         // A clock change (or a config copied from another machine) can put a timestamp in the future.
-        return age <= TimeSpan.Zero ? "just now" : Age(age) + " ago";
+        return age < TimeSpan.FromMinutes(1) ? "just now" : Age(age) + " ago";
     }
 
     /// <summary>

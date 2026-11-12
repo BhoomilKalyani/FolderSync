@@ -48,6 +48,22 @@ public class HumaniseTests
         Assert.Equal("2 hours ago", Humanise.Ago(DateTime.Now.AddHours(-2)));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(5)]
+    [InlineData(59)]
+    public void Something_under_a_minute_old_is_just_now_without_a_suffix(int secondsAgo)
+    {
+        // Was "just now ago" - shown in every pair's Last run cell straight after a sync.
+        Assert.Equal("just now", Humanise.Ago(DateTime.Now.AddSeconds(-secondsAgo)));
+    }
+
+    [Fact]
+    public void A_pair_that_has_just_run_reads_naturally()
+    {
+        Assert.Equal("OK · just now", new PairStatus { When = DateTime.Now, Success = true }.Text);
+    }
+
     [Fact]
     public void A_timestamp_in_the_future_does_not_produce_a_negative_age()
     {

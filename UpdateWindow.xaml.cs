@@ -21,7 +21,7 @@ public partial class UpdateWindow : Window
 
         Heading.Text = $"Folder Sync {info.Version} is available";
         SubHeading.Text = $"You have {Updater.CurrentVersion}."
-                        + (info.SetupSize > 0 ? $"   Download: {info.SetupSize / 1024.0 / 1024.0:0.#} MB" : "");
+                        + (info.SetupSize > 0 ? $"   Download: {Humanise.Size(info.SetupSize)}" : "");
         Notes.Text = string.IsNullOrWhiteSpace(info.Notes) ? "(no release notes)" : info.Notes;
 
         if (string.IsNullOrEmpty(info.SetupUrl))
