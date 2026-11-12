@@ -19,7 +19,7 @@
     <RootNamespace>FolderSync</RootNamespace>
 
     <!-- Bump this to release an update; the installer and the update check both read it. -->
-    <Version>1.2.0</Version>
+    <Version>1.2.1</Version>
     <Company>Bhoomil Kalyani</Company>
     <Authors>Bhoomil Kalyani</Authors>
     <Product>Folder Sync</Product>

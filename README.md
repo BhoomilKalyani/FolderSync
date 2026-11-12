@@ -379,6 +379,14 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
 
 ## Version history
 
+### 1.2.1
+
+- **Email library updated** to MailKit 5.0. Notification emails work as before; a recipient the mail
+  server rejects is still reported as an error.
+- **Release notes read cleanly in the update window.** They were shown with their formatting symbols
+  (`##`, `**`, backticks).
+- Build tooling kept current: .NET SDK 10.0.4xx and newer GitHub Actions.
+
 ### 1.2.0
 
 - **Fixed: non-English Windows.** robocopy's labels are translated there, so the app found nothing a
