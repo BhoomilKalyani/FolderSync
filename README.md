@@ -379,7 +379,7 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
 
 ## Version history
 
-### Unreleased
+### 1.2.0
 
 - **Fixed: non-English Windows.** robocopy's labels are translated there, so the app found nothing a
   mirror would delete: nothing was moved to the recycle folder, the large-deletion guard never fired,
