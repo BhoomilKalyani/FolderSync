@@ -9,8 +9,33 @@ Drive for Desktop each keep a normal **local folder** on your PC that their own 
 cloud. Folder Sync just copies between those local folders, and each cloud client uploads from
 there. That makes it fast and reliable, and it keeps working even if a provider changes its API.
 
-Built with .NET 10 / WPF, using Windows' own **robocopy** for the file transfer and
+Built with **.NET 10 / WPF**, using Windows' own **robocopy** for the file transfer and
 **Task Scheduler** for automation.
+
+```
+Your folder → robocopy → Google Drive / iCloud / OneDrive folders + a backup drive → each cloud app uploads its own folder
+```
+
+## Screenshots
+
+Folder pairs, cloud storage detection, scheduling, recycled files and the health check — all taken
+on version 1.2.1 with sample folders on a demo drive, so you can see how it works before installing:
+
+| Folder pairs | Cloud storage, found for you |
+|---|---|
+| ![Sync page: four folder pairs with their last result, the skip lists and the Sync now button](docs/screenshots/sync.png) | ![Sync page: cloud storage found on this PC, each with a "Sync to this" button](docs/screenshots/cloud-storage.png) |
+
+| Editing a pair | Last sync result |
+|---|---|
+| ![Edit folder pair dialog: name, left and right folder, sync type and the Mirror option](docs/screenshots/edit-pair.png) | ![Last sync card: files copied, failed, recycled and kept for each pair](docs/screenshots/last-sync.png) |
+
+| Schedule | Recycled files |
+|---|---|
+| ![Schedule page: daily, monthly and logon/unlock triggers](docs/screenshots/schedule.png) | ![Recycled files page: batches a mirror moved aside, and the files in the selected batch](docs/screenshots/recycled-files.png) |
+
+| Health check | Dark mode |
+|---|---|
+| ![Health check report: every folder pair, schedule and the last sync marked OK](docs/screenshots/health-check.png) | ![Sync page in dark mode](docs/screenshots/dark-mode.png) |
 
 ---
 
@@ -288,32 +313,60 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 ---
 
+## Repo layout
+
+```
+*.cs, *.xaml                   The app, all in the repo root: WPF windows plus the engine
+  SyncEngine.cs                Runs each pair: list-only pass, recycle, then robocopy
+  RobocopyOutput.cs            Reads robocopy's output without relying on its (translated) words
+  DeletionGuard.cs             Stops a mirror that would delete too much
+  RecycleStore.cs              The recycle folder: batches, restore, pruning
+  ScheduleManager.cs           Task Scheduler tasks, registered from XML
+  CloudFolders.cs              Finds cloud storage that syncs into a local folder
+  Updater.cs                   Release check, download and SHA-256 verification
+  Emailer.cs                   Summary email (MailKit)
+  SyncConfig.cs                config.json: load, migrate, save
+tests/FolderSync.Tests/        xUnit tests
+installer/FolderSync.iss       Inno Setup script
+build-installer.ps1            Publishes self-contained, then compiles the installer
+docs/screenshots/              The images above
+.github/workflows/ci.yml       Build + test on every pull request and push to main
+.github/workflows/release.yml  Publishes a release from a v* tag
+.github/dependabot.yml         Weekly update PRs for the NuGet packages, the .NET SDK and the Actions
+```
+
 ## Building from source
 
-Requires the [.NET 10 SDK](https://dotnet.microsoft.com/download) and, for the installer,
-[Inno Setup 6](https://jrsoftware.org/isinfo.php) (`winget install JRSoftware.InnoSetup`).
-`global.json` pins the SDK to the 10.x line so local builds match CI.
+### Prerequisites
+
+- [.NET 10 SDK](https://dotnet.microsoft.com/download) — `global.json` pins the SDK to the 10.x
+  line so local builds match CI
+- [Inno Setup 6](https://jrsoftware.org/isinfo.php), only for building the installer
+  (`winget install JRSoftware.InnoSetup`)
+- Windows 10 or 11 — the app is WPF, and it drives robocopy and Task Scheduler
+
+### Running it
 
 ```powershell
 dotnet build FolderSync.sln -c Release                              # compile everything
-dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # run the unit tests
 dotnet run --project FolderSync.csproj                              # run from source
 .\build-installer.ps1                                               # dist\FolderSyncSetup-<version>.exe (+ .sha256)
 ```
 
-### Layout
-
-| Path | What it is |
-|---|---|
-| `*.cs`, `*.xaml` | The app. WPF for the UI, plus the sync engine, scheduler, updater and mailer. |
-| `tests/FolderSync.Tests` | xUnit tests for the parsing and path logic that has bitten us before. |
-| `installer/FolderSync.iss` | Inno Setup script. |
-| `build-installer.ps1` | Publishes self-contained, then compiles the installer. |
-| `.github/workflows` | `ci.yml` builds and tests every push; `release.yml` publishes a release from a tag. |
-| `.github/dependabot.yml` | Weekly update PRs for the NuGet packages, the .NET SDK and the Actions. |
-
 Running from Visual Studio puts the exe in `bin\Debug\…`. Don't enable a schedule from there — it
 would point at a path that disappears on the next rebuild. The app warns you if you try.
+
+### Tests
+
+```powershell
+dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # 320 xUnit tests at 1.2.1
+```
+
+They cover the parts that can lose files or go wrong silently: reading robocopy's output (including
+real output replayed with every word translated), the large-deletion guard, the recycle folder,
+config loading and migration, and the update check with its checksum verification. Nothing in the
+suite touches your real `config.json` or GitHub. The same suite runs in CI on every pull request
+and push to `main`.
 
 ### Releasing a new version
 
@@ -374,6 +427,46 @@ Detection reads the register Windows keeps of apps that sync a cloud account int
 (`Explorer\SyncRootManager`), so a service does not need to be known to this code to be found —
 install it and it appears. Google Drive is the one special case: it mounts a drive letter containing
 `My Drive` rather than registering, so that is probed separately.
+
+---
+
+## Design notes / deliberate scope cuts
+
+- **Cloud storage is a folder, not an API.** No OAuth, no tokens, no rate limits — see
+  [Why cloud storage is treated as a folder](#why-cloud-storage-is-treated-as-a-folder). The cost:
+  a service with no desktop app that syncs into a folder can't be a destination.
+- **Two-way never deletes.** robocopy keeps no record of the previous run, so "deleted on one side"
+  can't be told apart from "added on the other". Rather than guess, a two-way pair only ever copies.
+  Deletions need a one-directional pair with Mirror.
+- **One-way mirrors keep deleted files, not replaced ones.** A file removed from the source is
+  moved to the recycle folder. A file that *changed* is simply replaced at the destination; only
+  two-way pairs keep the version that was replaced.
+- **One schedule for everything.** Every enabled pair runs together on each trigger. There are no
+  per-pair schedules.
+- **Some settings are config-file only.** The deletion-guard thresholds, recycle retention, the
+  minimum gap between automatic syncs and the update check live in `config.json`
+  (**Open config file**) — there is no Settings page yet.
+- **Not code-signed.** That needs a paid certificate, so the first install shows a SmartScreen
+  warning. In-app updates are checked against the release's SHA-256 instead.
+- **Non-English Windows is covered by tests, not by a real install.** The parser ignores robocopy's
+  words entirely, and the tests replay real robocopy output with every word replaced — but it has
+  not been run on an actual non-English copy of Windows.
+- **Windows only.** robocopy and Task Scheduler do the heavy lifting, and both are Windows tools.
+
+## What I'd add next
+
+In priority order:
+
+1. **Previous versions on one-way mirrors.** The biggest real gap: a file overwritten with a bad
+   copy is mirrored everywhere, and today only two-way pairs keep the version it replaced.
+2. **An alert when a backup is overdue.** A pair that has not succeeded for several days should say
+   so on its own, rather than waiting for someone to open the window.
+3. **Review and approve when the guard stops a mirror.** Today the choices are to fix the folder or
+   switch the guard off in `config.json`; showing what would be deleted and letting you approve
+   that one run would be safer.
+4. **A Settings page** for the options that are config-file only.
+5. **A free-space check before copying,** so a full backup drive is reported up front instead of
+   part-way through.
 
 ---
 
