@@ -9,12 +9,19 @@ public partial class PairWindow : Window
 {
     private readonly SyncPair _pair;
     private readonly bool _isNew;
+    private readonly SyncConfig? _config;
 
-    public PairWindow(SyncPair pair, bool isNew)
+    /// <param name="config">
+    /// The settings the pair will run under, so the dialog can say how long kept versions last and
+    /// whether there is a recycle folder to keep them in. Optional; without it the help text is general.
+    /// </param>
+    public PairWindow(SyncPair pair, bool isNew, SyncConfig? config = null)
     {
         InitializeComponent();
         _pair = pair;
         _isNew = isNew;
+        _config = config;
+        KeepVersionsCheck.IsChecked = pair.KeepVersions;
 
         Title = isNew ? "Add folder pair" : "Edit folder pair";
         Heading.Text = Title;
@@ -67,6 +74,21 @@ public partial class PairWindow : Window
             : MirrorCheck.IsChecked == true
                 ? "Files missing from the source will be removed from the receiving folder — recoverable from Recycled files."
                 : "Additive: files are only added or updated, never deleted.";
+
+        // A changed file overwrites the copy at the receiving side whether or not the pair mirrors, so
+        // this applies to every one-directional pair. Two-way pairs have one setting for all of them.
+        bool recycling = _config?.RecycleDeletedFiles ?? true;
+        KeepVersionsCheck.IsEnabled = !twoWay && recycling;
+        KeepVersionsHelp.Text = twoWay
+            ? "Two-way pairs follow the setting on the Settings page"
+              + (_config is null ? "." : _config.KeepsReplacedVersions ? " — currently on." : " — currently off.")
+            : !recycling
+                ? "Not available while the recycle folder is switched off (Settings): that is where the kept versions go."
+                : KeepVersionsCheck.IsChecked == true
+                    ? "Before a changed file is replaced, the copy at the receiving side is put in the recycle folder"
+                      + (_config is null ? "" : $" for {_config.RecycleRetentionDays} days")
+                      + ". You can put it back from Recycled files. It uses space at the receiving side."
+                    : "Off: a changed file replaces the copy at the receiving side, and the old version is gone.";
 
         // Red for something that blocks saving, muted grey for a heads-up.
         string? error = Problem();
@@ -141,6 +163,7 @@ public partial class PairWindow : Window
         _pair.Right = right;
         _pair.Direction = SelectedDirection;
         _pair.Mirror = SelectedDirection != SyncDirection.TwoWay && MirrorCheck.IsChecked == true;
+        _pair.KeepVersions = SelectedDirection != SyncDirection.TwoWay && KeepVersionsCheck.IsChecked == true;
         if (_isNew) _pair.Enabled = true;
 
         DialogResult = true;

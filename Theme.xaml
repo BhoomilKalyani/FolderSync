@@ -317,6 +317,9 @@
                     <Setter Property="Padding" Value="12,10"/>
                     <Setter Property="Margin" Value="0,2"/>
                     <Setter Property="Cursor" Value="Hand"/>
+                    <!-- The selected page is already marked by its background and accent bar, and
+                         selection follows the keyboard, so a dotted focus rectangle adds nothing. -->
+                    <Setter Property="FocusVisualStyle" Value="{x:Null}"/>
                     <Setter Property="Template">
                         <Setter.Value>
                             <ControlTemplate TargetType="ListBoxItem">
@@ -403,9 +406,17 @@
         </Setter>
     </Style>
 
+    <!-- Text inside a DataGrid cell template. Explicit on purpose: the implicit TextBlock style above
+         sets Foreground, which would keep the text dark on a selected (accent-coloured) row. With no
+         Foreground here it inherits the cell's, and long text ends in an ellipsis instead of being cut. -->
+    <Style x:Key="CellText" TargetType="TextBlock">
+        <Setter Property="TextTrimming" Value="CharacterEllipsis"/>
+        <Setter Property="VerticalAlignment" Value="Center"/>
+    </Style>
+
     <!-- ========================= ProgressBar ======================== -->
     <Style TargetType="ProgressBar">
-        <Setter Property="Height" Value="4"/>
+        <Setter Property="Height" Value="6"/>
         <Setter Property="Background" Value="{DynamicResource CardBorder}"/>
         <Setter Property="Foreground" Value="{DynamicResource Accent}"/>
         <Setter Property="BorderThickness" Value="0"/>

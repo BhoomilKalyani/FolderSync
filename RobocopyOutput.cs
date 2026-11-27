@@ -67,12 +67,20 @@ public static class RobocopyOutput
     /// The path is located by searching for the destination root rather than splitting on
     /// whitespace, because robocopy's size column can read "1.7 m" (two tokens).
     /// </summary>
-    public static bool TryParseExtraPath(string line, string destinationRoot, out string path, out bool isDirectory)
+    public static bool TryParseExtraPath(string line, string destinationRoot, out string path, out bool isDirectory) =>
+        TryParseExtraPath(line, destinationRoot, out path, out isDirectory, out _);
+
+    /// <summary>
+    /// The same, with the item's size in bytes. The size is only a whole number when the pass was run
+    /// with <c>/BYTES</c>; otherwise, and for a folder (which robocopy sizes as -1), it is -1.
+    /// </summary>
+    public static bool TryParseExtraPath(string line, string destinationRoot, out string path, out bool isDirectory, out long size)
     {
         path = "";
         isDirectory = false;
+        size = -1;
         if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(destinationRoot)) return false;
-        if (!TryFindPathUnder(line, destinationRoot, out string raw, out int rootLength)) return false;
+        if (!TryFindPathUnder(line, destinationRoot, out string raw, out int rootLength, out int index)) return false;
 
         string candidate = raw.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
@@ -81,6 +89,7 @@ public static class RobocopyOutput
 
         path = candidate;
         isDirectory = candidate.Length != raw.Length;
+        size = isDirectory ? -1 : SizeBefore(line, index);
         return true;
     }
 
@@ -97,21 +106,67 @@ public static class RobocopyOutput
     /// Verified against robocopy: <c>"\t    Newer     \t\t      16\tC:\src\shared.txt"</c> and
     /// <c>"\t    Changed   \t\t      27\tC:\src\same-time.txt"</c>.
     /// </summary>
-    public static bool TryParseOverwrittenSourcePath(string line, string sourceRoot, out string path)
+    public static bool TryParseOverwrittenSourcePath(string line, string sourceRoot, out string path) =>
+        TryParseCopyPath(line, sourceRoot, out path, out _);
+
+    /// <summary>
+    /// A file robocopy is going to copy (or, in a real pass, has copied): its source path and, when the
+    /// pass was run with <c>/BYTES</c>, its size in bytes (-1 otherwise). The same label-free reading as
+    /// <see cref="TryParseOverwrittenSourcePath"/>: every line that names a file inside the source is a
+    /// file being copied - new, newer, older or changed - because files robocopy skips are not listed.
+    /// </summary>
+    public static bool TryParseCopyPath(string line, string sourceRoot, out string path, out long size)
     {
         path = "";
+        size = -1;
         if (string.IsNullOrWhiteSpace(line) || string.IsNullOrWhiteSpace(sourceRoot)) return false;
 
         // Located by searching for the root rather than splitting on whitespace, because the size
         // column can read "1.7 m" - two tokens.
-        if (!TryFindPathUnder(line, sourceRoot, out string raw, out int rootLength)) return false;
+        if (!TryFindPathUnder(line, sourceRoot, out string raw, out int rootLength, out int index)) return false;
 
         // A trailing separator marks a directory, which has no contents of its own to overwrite.
         if (raw.EndsWith(Path.DirectorySeparatorChar) || raw.EndsWith(Path.AltDirectorySeparatorChar)) return false;
         if (raw.Length <= rootLength) return false;
 
         path = raw;
+        size = SizeBefore(line, index);
         return true;
+    }
+
+    /// <summary>
+    /// True for a line of a real (not list-only) pass that reports one file being copied. Used only to
+    /// count progress, so it does not need the file's name - which matters, because the console output
+    /// it reads is in the OEM code page and cannot spell every name.
+    ///
+    /// <para>Item lines start with a tab in every language. Folders end in a separator, error lines
+    /// start with a date, and the destination's extras - which robocopy lists even when it is not
+    /// deleting them - point inside the destination.</para>
+    /// </summary>
+    public static bool IsCopiedFileLine(string line, string destinationRoot)
+    {
+        if (string.IsNullOrEmpty(line) || line[0] != '\t') return false;
+        if (line.EndsWith(Path.DirectorySeparatorChar) || line.EndsWith(Path.AltDirectorySeparatorChar)) return false;
+        if (ErrorCode.IsMatch(line)) return false;
+        return !TryParseExtraPath(line, destinationRoot, out _, out _);
+    }
+
+    /// <summary>
+    /// The size column: the last run of characters before the path, when it is a whole number.
+    /// <c>"\t    New File  \t\t 3145728\tC:\src\big.bin"</c> gives 3145728; <c>"3.0 m"</c> (no /BYTES)
+    /// and <c>"-1"</c> (a folder) give -1.
+    /// </summary>
+    private static long SizeBefore(string line, int pathIndex)
+    {
+        int end = pathIndex;
+        while (end > 0 && char.IsWhiteSpace(line[end - 1])) end--;
+        int start = end;
+        while (start > 0 && !char.IsWhiteSpace(line[start - 1])) start--;
+
+        return end > start
+            && long.TryParse(line.AsSpan(start, end - start), NumberStyles.None, CultureInfo.InvariantCulture, out long size)
+            ? size
+            : -1;
     }
 
     /// <summary>robocopy's error code, "(0x00000005)": printed in the same form in every language.</summary>
@@ -126,9 +181,10 @@ public static class RobocopyOutput
     /// never matches. Only the text before the path is checked for the error code, so a file that
     /// happens to be called "(0x00000005).txt" is still found.
     /// </summary>
-    private static bool TryFindPathUnder(string line, string root, out string path, out int rootLength)
+    private static bool TryFindPathUnder(string line, string root, out string path, out int rootLength, out int index)
     {
         path = "";
+        index = -1;
         string trimmed = root.Trim().TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         rootLength = trimmed.Length;
         if (trimmed.Length == 0) return false;
@@ -138,6 +194,7 @@ public static class RobocopyOutput
         if (ErrorCode.IsMatch(line[..idx])) return false;
 
         path = line[idx..].Trim();
+        index = idx;
         return true;
     }
 }

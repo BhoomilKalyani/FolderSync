@@ -1,0 +1,62 @@
+<Window x:Class="FolderSync.ChangesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Height="660" Width="1000" MinHeight="380" MinWidth="640"
+        WindowStartupLocation="CenterOwner" ShowInTaskbar="False"
+        Background="{DynamicResource WindowBg}"
+        TextOptions.TextFormattingMode="Display"
+        UseLayoutRounding="True">
+    <DockPanel Margin="20,18,20,16">
+        <StackPanel DockPanel.Dock="Top">
+            <TextBlock x:Name="Heading" Style="{StaticResource H1}" FontSize="20" TextWrapping="Wrap"/>
+            <TextBlock x:Name="Summary" Style="{StaticResource Subtle}" Margin="0,2,0,12"/>
+            <!-- Anything that would stop a pair from syncing, or that needs thinking about before approving. -->
+            <Border x:Name="WarningBox" Visibility="Collapsed" Background="{DynamicResource CardBg}"
+                    BorderBrush="{DynamicResource Warn}" BorderThickness="1" CornerRadius="6"
+                    Padding="12,9" Margin="0,0,0,12">
+                <TextBlock x:Name="WarningText" TextWrapping="Wrap" LineHeight="19"/>
+            </Border>
+        </StackPanel>
+
+        <Grid DockPanel.Dock="Bottom" Margin="0,14,0,0">
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                <Button x:Name="LogButton" Content="View full log" Style="{StaticResource LinkButton}"
+                        Visibility="Collapsed" Click="Log_Click"/>
+                <TextBlock x:Name="CountText" Style="{StaticResource Subtle}" VerticalAlignment="Center"/>
+            </StackPanel>
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button x:Name="CloseButton" Content="Close" MinWidth="92" Click="Close_Click"/>
+                <Button x:Name="ApproveButton" Style="{StaticResource DangerButton}" Margin="0"
+                        Visibility="Collapsed" Click="Approve_Click"/>
+            </StackPanel>
+        </Grid>
+
+        <Grid>
+            <DataGrid x:Name="ChangeGrid" IsReadOnly="True">
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Pair" Binding="{Binding Pair, Mode=OneWay}" Width="150"/>
+                    <DataGridTextColumn Header="What" Binding="{Binding What, Mode=OneWay}" Width="235"/>
+                    <DataGridTemplateColumn Header="File" Width="2*" SortMemberPath="File">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding File, Mode=OneWay}" Style="{StaticResource CellText}"
+                                           ToolTip="{Binding File, Mode=OneWay}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                    <DataGridTextColumn Header="Size" Binding="{Binding SizeText, Mode=OneWay}" Width="90" SortMemberPath="Size"/>
+                    <DataGridTemplateColumn Header="In folder" Width="*" SortMemberPath="Into">
+                        <DataGridTemplateColumn.CellTemplate>
+                            <DataTemplate>
+                                <TextBlock Text="{Binding Into, Mode=OneWay}" Style="{StaticResource CellText}"
+                                           ToolTip="{Binding Into, Mode=OneWay}"/>
+                            </DataTemplate>
+                        </DataGridTemplateColumn.CellTemplate>
+                    </DataGridTemplateColumn>
+                </DataGrid.Columns>
+            </DataGrid>
+            <TextBlock x:Name="EmptyText" Visibility="Collapsed" HorizontalAlignment="Center" VerticalAlignment="Center"
+                       Style="{StaticResource Subtle}" FontSize="14" TextAlignment="Center" MaxWidth="520"/>
+        </Grid>
+    </DockPanel>
+</Window>

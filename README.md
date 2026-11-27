@@ -18,24 +18,24 @@ Your folder → robocopy → Google Drive / iCloud / OneDrive folders + a backup
 
 ## Screenshots
 
-Folder pairs, cloud storage detection, scheduling, recycled files and the health check — all taken
-on version 1.2.1 with sample folders on a demo drive, so you can see how it works before installing:
+The Home page, the folder pairs, the history, the preview and the rest — all taken on version 1.3.0
+with sample folders on a demo drive, so you can see how it works before installing:
 
-| Folder pairs | Cloud storage, found for you |
+| Home | Folder pairs |
 |---|---|
-| ![Sync page: four folder pairs with their last result, the skip lists and the Sync now button](docs/screenshots/sync.png) | ![Sync page: cloud storage found on this PC, each with a "Sync to this" button](docs/screenshots/cloud-storage.png) |
+| ![Home page: one line saying all pairs are in sync, the Sync now button, a card per pair and the last 30 days as coloured squares](docs/screenshots/home.png) | ![Folder pairs page: each pair with its last result, the two folders with an arrow between them, and its mode](docs/screenshots/folder-pairs.png) |
 
-| Editing a pair | Last sync result |
+| History | Preview |
 |---|---|
-| ![Edit folder pair dialog: name, left and right folder, sync type and the Mirror option](docs/screenshots/edit-pair.png) | ![Last sync card: files copied, failed, recycled and kept for each pair](docs/screenshots/last-sync.png) |
+| ![History page: every run with what started it and what it copied, and the files the selected run changed](docs/screenshots/history.png) | ![Preview window: a table of each file a sync would copy, replace or delete](docs/screenshots/preview.png) |
 
-| Schedule | Recycled files |
+| Reviewing a stopped mirror | Recycled files |
 |---|---|
-| ![Schedule page: daily, monthly and logon/unlock triggers](docs/screenshots/schedule.png) | ![Recycled files page: batches a mirror moved aside, and the files in the selected batch](docs/screenshots/recycled-files.png) |
+| ![Review window: the files a stopped mirror would delete, with a button to approve it](docs/screenshots/review.png) | ![Recycled files page: batches a sync moved aside, and the files in the selected batch](docs/screenshots/recycled-files.png) |
 
-| Health check | Dark mode |
+| Settings | Dark mode |
 |---|---|
-| ![Health check report: every folder pair, schedule and the last sync marked OK](docs/screenshots/health-check.png) | ![Sync page in dark mode](docs/screenshots/dark-mode.png) |
+| ![Settings page: sync when files change, start with Windows, the recycle folder and the deletion guard](docs/screenshots/settings.png) | ![Home page in dark mode](docs/screenshots/dark-mode.png) |
 
 ---
 
@@ -47,18 +47,23 @@ on version 1.2.1 with sample folders on a demo drive, so you can see how it work
 | **Finds your cloud storage** | Google Drive, OneDrive, iCloud, Dropbox and anything else that syncs into a folder are detected automatically and offered as a destination — no sign-in, no API keys, nothing to configure. |
 | **Three sync types** | Left → Right, Right → Left, or Two-way (both folders merged, newer file wins). |
 | **Mirror or additive** | A one-directional pair can mirror (an exact copy, deletions carry over) or stay additive — mirror to the cloud while a backup drive keeps everything. |
-| **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. Two-way pairs also keep the copy that a newer version replaced. |
-| **Large-deletion guard** | If a mirror is about to remove an unexpectedly large share of the receiving side — the signature of a source folder that is wrong or not yet available — it stops untouched and says so. |
-| **Per-pair status** | Each pair shows its last result and how long ago, so one that has been quietly failing is obvious at a glance. |
-| **Preview (dry run)** | See exactly what *would* be copied or deleted before committing to it. |
+| **Deletion safety net** | For mirrored destinations, files that would be deleted are moved to a dated recycle folder instead, and can be restored from the app. |
+| **Previous versions** | Keep the version a changed file replaces, so a file that went wrong at the source can be rolled back. Always for two-way pairs; a choice for each one-directional pair. |
+| **Large-deletion guard** | If a mirror is about to remove an unexpectedly large share of the receiving side — the signature of a source folder that is wrong or not yet available — it stops untouched and says so. You can then see exactly what it would delete, and approve it if that is what you meant. |
+| **Home page** | One line saying how things stand, a card per pair with its last result and free space, and the last 30 days as a strip of coloured squares. |
+| **History** | Every sync is kept: when it ran, what started it, how long it took and which files it copied, replaced or removed. Export it to CSV. |
+| **Preview (dry run)** | A table of exactly what *would* be copied, replaced or deleted, before committing to it. |
+| **Real progress** | While a sync runs: which pair, and how many of its files are done. |
 | **Scheduling** | Daily, monthly, and **at sign-in / every screen unlock** — no admin rights needed. |
-| **Email notifications** | Optional summary email after each scheduled sync, with the log attached. |
-| **Restore deleted files** | Browse what a mirror moved aside and put files back into the source in a couple of clicks. |
+| **Sync when files change** | Optionally watches the folders your pairs copy from and syncs about a minute after a change. |
+| **Notifications** | A Windows notification when a sync nobody was watching fails or is stopped, and when a pair has not synced for days. Optional email: after each scheduled sync, or one summary a week. |
+| **Restore deleted files** | Browse what a sync moved aside and put files back into the source in a couple of clicks. |
 | **Health check** | One button that diagnoses everything that can silently stop a sync. |
-| **System tray** | Runs quietly in the tray with completion notifications. |
+| **System tray** | Runs quietly in the tray, and can start there when you sign in. |
+| **Settings page** | The recycle folder, the deletion guard, history, notifications and the rest — no need to edit a file. |
 | **Skip lists** | Exclude file patterns and folders. |
 | **Auto-update** | Notifies you when a new version is released and installs it in one click. |
-| **Light and dark** | Follows your Windows theme, with a manual toggle. |
+| **Light and dark** | Follows your Windows theme, or stays on the one you choose. |
 
 ---
 
@@ -66,7 +71,7 @@ on version 1.2.1 with sample folders on a demo drive, so you can see how it work
 
 1. Download **`FolderSyncSetup-<version>.exe`** from the
    [**Releases**](https://github.com/BhoomilKalyani/FolderSync/releases) page.
-2. Run it. On first launch, set your **Source** folder and add your **destinations**.
+2. Run it. On first launch, set up your first **folder pair** — see [Getting started](#getting-started).
 
 **Requirements:** Windows 10 or 11 (64-bit). Nothing else — the .NET runtime is bundled.
 
@@ -85,15 +90,16 @@ on version 1.2.1 with sample folders on a demo drive, so you can see how it work
 
 ## Getting started
 
-A fresh install starts empty — nothing is synced until you say so. The window has five pages in
-the sidebar: **Sync**, **Schedule**, **Notifications**, **Recycled files** and **About**.
+A fresh install starts empty — nothing is synced until you say so. The window has eight pages in
+the sidebar: **Home**, **Folder pairs**, **Schedule**, **History**, **Recycled files**,
+**Notifications**, **Settings** and **About**.
 
-1. **Cloud storage found on this PC** lists the cloud services already installed. Click **Sync to
-   this…** next to one and pick the folder you want backed up — that is the whole setup.
-   Alternatively click **Add pair…** and choose both folders yourself.
+1. Open **Folder pairs**. **Cloud storage found on this PC** lists the cloud services already
+   installed. Click **Sync to this…** next to one and pick the folder you want backed up — that is
+   the whole setup. Alternatively click **Add pair…** and choose both folders yourself.
 2. Repeat for as many pairs as you need — one source can feed several folders, and different pairs
    can use different folders entirely.
-3. Click **Preview** to see what would happen, then **Sync now** to do it.
+3. Back on **Home**, click **Preview** to see what would happen, then **Sync now** to do it.
 4. Optionally open **Schedule** and enable the triggers you want. All enabled pairs run together.
 
 > **About Google Drive:** use a folder under **`My Drive`**. The *"Other computers"* section is a
@@ -135,24 +141,39 @@ sending folder is momentarily wrong — a drive letter that moved, a folder rena
 that hasn't finished starting and is briefly showing an empty tree — a mirror faithfully removes
 everything at the other end.
 
-So before a mirror deletes anything, Folder Sync counts what would go. If that is more than
-`LargeDeletionPercent` (default **25%**) of the files on the receiving side *and* at least
-`LargeDeletionMinimumFiles` (default **25**) of them, the pair is **stopped untouched** — nothing
-deleted, nothing copied, nothing even moved to the recycle folder — and the reason is reported. Fix
-the sending folder and sync again.
+So before a mirror deletes anything, Folder Sync counts what would go. If that is **25%** or more of
+the files on the receiving side *and* at least **25** of them, the pair is **stopped untouched** —
+nothing deleted, nothing copied, nothing even moved to the recycle folder — and the reason is
+reported. Usually the fix is to put the sending folder right and sync again.
 
 Both conditions have to be met, so clearing two files out of three doesn't block an ordinary sync of a
-small folder. Set `"GuardLargeDeletions": false` to switch it off.
+small folder. Both numbers, and the guard itself, are on the **Settings** page.
 
-### Two-way conflicts
+**When the deletion is what you meant.** Sometimes a big clear-out is deliberate. A stopped pair
+shows a **Review…** button on the Home page (and a prompt straight after a sync you started
+yourself). It lists every file the mirror would remove and says how many files the sending folder
+holds right now. **Remove … and sync** then runs that one pair, once, with the guard let through.
+The approval is for the number of files you were shown: if the sync finds more than that to delete,
+the guard stops it again. A scheduled sync never approves anything — it stops, and tells you.
 
-When the same file has changed on both sides of a two-way pair, the newer copy wins — and the copy it
-replaces is **kept in the recycle folder** rather than being overwritten and lost, in its own
-`-replaced` batch so it is never mistaken for a deletion. The log says how many files this happened to.
+### Previous versions
 
-Note the honest limitation: without a record of the previous run, a genuine conflict cannot be told
-apart from an ordinary update, so *every* replaced file is kept. Set
-`"BackupOverwrittenFiles": false` if you would rather it didn't.
+A changed file overwrites the copy at the receiving side. Without anything else that old copy is
+gone, so a document that was damaged or emptied at the source is faithfully damaged everywhere.
+
+Folder Sync can keep the version a file had before it was replaced. It goes in the recycle folder, in
+its own `-replaced` batch so it is never mistaken for a deletion, and can be put back from
+**Recycled files**.
+
+- **One-directional pairs** (mirror or additive) choose this for themselves: tick **Keep the previous
+  version when a changed file replaces it** in the pair's settings. It is off unless you turn it on,
+  because the kept versions take up space at the receiving side until they expire.
+- **Two-way pairs** always keep it (Settings → *Two-way pairs: keep the version a newer copy
+  replaces*). The honest limitation there: without a record of the previous run, a genuine conflict
+  cannot be told apart from an ordinary update, so *every* replaced file is kept.
+
+If a previous version cannot be kept — the recycle folder cannot be written to — the copy is not
+made at all, rather than overwriting a file whose old version is not safe.
 
 ### Upgrading from an earlier version
 
@@ -163,8 +184,8 @@ unchanged. The old fields are then cleared.
 ### Recycled files
 
 Because mirroring propagates deletions, anything a mirror is about to delete is **moved aside**
-first rather than deleted — as is any file a two-way pair is about to overwrite with a newer copy
-from the other side:
+first rather than deleted — as is the version a changed file is about to replace, for pairs that
+keep [previous versions](#previous-versions):
 
 ```
 <destination>\_FolderSyncTrash\<yyyyMMdd-HHmmss>\<original relative path>
@@ -178,14 +199,49 @@ There are two kinds of batch, and the **Why** column says which:
 | `20260731-143022-replaced` | The version a file had before a newer copy **replaced** it | Rolls it back, discarding the newer content on the next sync |
 
 That distinction matters: a replaced file still exists on both sides, so putting the old copy back is
-undoing a merge rather than recovering something lost. The page spells this out for whichever batch
+undoing a change rather than recovering something lost. The page spells this out for whichever batch
 you select, and the restore prompt repeats it.
 
 The **Recycled files** page lists these batches, shows what is inside, and restores files back into
 the folder they came from — the next sync then carries that across the pair. The recycle folder is
-never mirrored (otherwise it would be purged itself) and batches older than
-`RecycleRetentionDays` (default **30**) are removed automatically. Set
-`"RecycleDeletedFiles": false` to make deletions permanent instead.
+never mirrored (otherwise it would be purged itself) and batches older than **30 days** are removed
+automatically. How long they are kept is on the **Settings** page, and so is the switch that turns
+the recycle folder off — which makes deletions permanent, and asks before it does.
+
+---
+
+## Home and History
+
+**Home** is the page the window opens on. Its first line says how things stand — *All 3 folder pairs
+are in sync*, or *1 of 3 folder pairs needs attention* — with when the last sync was and when the next
+one is due. **Sync now**, **Preview** and **Check health** are right under it.
+
+Below that is a card for each pair: its two folders, its last result, how long ago it last synced
+successfully, and the free space on the drive it writes to. A pair that has gone longer than a week
+without a successful sync turns amber even if nothing has failed — an unplugged backup drive is
+skipped quietly on every run, and this is where it shows.
+
+At the bottom, **the last 30 days**: one square per day, green when every sync was clean, amber when
+something was skipped or failed and then recovered, red when the day ended on a failure, grey when
+nothing ran.
+
+**History** lists every sync, newest first: when it ran, what started it (*Sync now*, *Daily
+schedule*, *Sign-in or unlock*, *File change*), how long it took, and how much it copied. Select a
+run to see each pair's result — copied, failed, recycled, versions kept — and **the files it
+changed**: new, updated, deleted, with their sizes. A run lists up to 1,000 changes per pair and counts the rest;
+the run's log, one click away, has every one.
+
+**Export to CSV…** writes the list to a spreadsheet, one row for each pair of each run.
+
+History is kept for **90 days** and log files for **30** (both on the Settings page). It starts with
+version 1.3.0: earlier versions remembered only the most recent sync.
+
+### Preview
+
+**Preview** works out what a sync would do and changes nothing. It opens a table with one row per
+file — *Copy (new)*, *Replace*, *Delete (kept in the recycle folder)* — its size, and the folder
+that would receive it, with totals at the top. If the large-deletion guard would stop a pair, the
+preview says so. The raw log behind the table is one click away.
 
 ---
 
@@ -205,7 +261,7 @@ Times are chosen from drop-downs rather than typed, so an impossible value can't
 
 On a laptop that sleeps and locks rather than shutting down, **logon/unlock** is the trigger that
 actually keeps things current. Because unlocking happens often, those runs are throttled to at most
-one sync every `MinMinutesBetweenAutoSyncs` minutes (default **15**); skips are noted in
+one sync every **15 minutes** (changeable on the Settings page); skips are noted in
 `logs\events.log`.
 
 All three are ordinary **Task Scheduler** tasks running as your user with **no admin rights**.
@@ -216,12 +272,56 @@ They are registered from XML rather than `schtasks /SC …` because that is the 
   battery**, which is fatal on a laptop;
 - `StartWhenAvailable = true` — a run missed while the machine was asleep happens once it wakes.
 
+Each task tells the app which schedule it is, so the History page can say *Daily schedule* rather
+than only *Schedule*. Tasks created by an earlier version are re-registered once by Setup for that
+purpose, keeping their time, day and whether they were paused.
+
+### Sync when files change
+
+Optional, and off unless you turn it on (**Settings → Sync when files change**). Folder Sync then
+watches the folder each pair copies *from* and starts a sync once it has been quiet for a minute
+(15 seconds to 10 minutes — your choice), so a file saved into your Documents reaches the other
+side without waiting for the next unlock. Only the pairs that read from the changed folder run.
+
+- **It needs Folder Sync to be running.** The scheduled triggers start a copy of the app that syncs
+  and exits; watching is done by the app itself, which can sit in the tray. With watching on,
+  closing the window keeps it running there — use **Exit** on the tray icon to stop it — and
+  **Start Folder Sync in the tray when I sign in** keeps it running across restarts.
+- **It waits for things to settle.** Saving a document is several events over a second or two, so
+  the sync waits for the folder to go quiet. A folder that never goes quiet (a long download) is
+  synced after ten minutes regardless.
+- **It does not set itself off.** Only the sending side is watched, so the sync's own copying is
+  never mistaken for a change. Names on the skip list, and the recycle folder, are ignored too.
+
 ---
 
-## Email notifications
+## Notifications
 
-Optional: get a summary (with the run's log attached) after each **scheduled** sync. Manual runs
-don't email — use **Send Test Email** to check your settings.
+### Windows notifications
+
+A sync that runs unattended and goes wrong used to say nothing unless email was set up — a
+scheduled run that failed every night was only discovered when somebody opened the window. Now:
+
+- **A sync nobody was watching fails, or is stopped by the deletion guard** → a notification naming
+  the pair and the reason. The same failure is not repeated for six hours.
+- **A pair has not synced successfully for a week** → a warning, at most once a day. This is how an
+  unplugged backup drive or a schedule that stopped running gets noticed. The number of days is
+  yours to choose.
+
+Both are on the **Notifications** page and can be switched off. When Folder Sync is running (in the
+tray) the notifications come from its icon and stay in the notification list; when it is not, the
+scheduled run shows one itself for a few seconds before it exits.
+
+### Email
+
+Optional: get a summary (with the run's log attached) after each **scheduled** sync — always, only
+on errors, or only on success. Manual runs don't email; use **Send test email** to check your
+settings.
+
+Or choose **Weekly summary**: no email per run, and one message a week instead with how many syncs
+ran, what was copied, any runs that failed, and each pair's state — including pairs that have
+quietly not synced. It is sent by the first unattended sync after the week is up, and the first one
+arrives a week after you switch it on.
 
 For Gmail you need a **16-character App Password**, not your normal password:
 
@@ -238,24 +338,28 @@ SMTP sign-in, so a personal account is usually the more reliable sender.
 
 ## When something isn't working
 
-Click **Check Health**. It reports `OK` / `WARN` / `FAIL` for the source, every destination
-(including free space), each schedule **and whether its program file still exists**, how long ago
-the last sync ran, email setup, and log writability.
+Click **Check health** on the Home page. It reports `OK` / `WARN` / `FAIL` for every folder pair
+(including free space), each schedule **and whether its program file still exists**, whether
+watching for changes can work, how long ago the last sync ran and which pairs are overdue,
+notifications, email setup, and log writability.
 
 Common causes:
 
 | Symptom | Cause |
 |---|---|
-| A pair says **Skipped — drive not connected** | Exactly that: the USB or network drive isn't attached. Not an error, and no email is sent for it. |
-| A mirror **stopped** without deleting anything | The large-deletion guard: the sending folder is probably wrong or not fully available. Check it and sync again. |
+| A pair says **Drive not connected** | Exactly that: the USB or network drive isn't attached. Not an error, and no email is sent for it — but after a week without a successful sync you get a warning. |
+| A mirror was **stopped** without deleting anything | The large-deletion guard: the sending folder is probably wrong or not fully available. Check it and sync again — or, if the deletion is what you meant, **Review…** it on the Home page and approve it. |
 | Schedule shows enabled but never runs | It points at a program file that has moved. The app offers a one-click repair on startup. |
 | Nothing syncs at startup | Windows only fires a *logon* trigger on a real sign-in; add the **unlock** trigger. |
+| Files are not synced when they change | Watching only works while Folder Sync is running. Turn on **Start Folder Sync in the tray when I sign in**, and check the Settings page says it is watching your folders. |
+| The window closes into the tray instead of exiting | That is on purpose while it is watching for changes or set to start with Windows. Right-click the tray icon and choose **Exit**. |
 | Email fails with `5.7.9` | You used your account password instead of an App Password. |
 
-Logs live in `%LOCALAPPDATA%\FolderSync\logs` (**Open log folder** in the app): one
-`sync-<timestamp>.log` per run, `preview-*.log` for dry runs, and `events.log` for schedule, update
-and crash events. Sync and preview logs are pruned after 7 days; `events.log` is trimmed to its most
-recent entries once it grows past half a megabyte.
+Logs live in `%LOCALAPPDATA%\FolderSync\logs` (**Open logs** in the app): one
+`sync-<timestamp>.log` per run, `preview-*.log` for dry runs, and `events.log` for schedule, update,
+notification and crash events. Sync and preview logs are pruned after 30 days; `events.log` is
+trimmed to its most recent entries once it grows past half a megabyte. The run history is in
+`%LOCALAPPDATA%\FolderSync\history`, one small file per sync.
 
 If `config.json` is ever unreadable, Folder Sync keeps it as `config.bad-<timestamp>.json` beside it
 and starts from defaults rather than overwriting your settings — `events.log` says what happened.
@@ -269,7 +373,8 @@ a tray notification and an **Update to x.y.z** link; the dialog shows the releas
 **Update Now** button that downloads the installer, checks it against the SHA-256 published with
 the release, runs it, and restarts the app. An installer that does not match is deleted and never
 run; a release that publishes no checksum is offered as a link to the release page instead. You can also
-check any time from the tray menu. Disable with `"CheckForUpdates": false`.
+check any time from the tray menu or the About page. Switch the automatic check off on the Settings
+page.
 
 > The install path stays the same across versions on purpose. The scheduled tasks store an absolute
 > path to `FolderSync.exe`, so a versioned install folder (as ClickOnce uses) would break them on
@@ -279,37 +384,46 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 ## Configuration reference
 
-`%LOCALAPPDATA%\FolderSync\config.json` — the UI writes this, but you can edit it directly
-(**Open config file**).
+`%LOCALAPPDATA%\FolderSync\config.json` — the window writes this, and almost everything in it is on
+the Settings and Notifications pages. You can still edit it directly (**Open config file**).
 
 | Key | Default | Meaning |
 |---|---|---|
-| `Pairs` | `[]` | Folder pairs: `Name`, `Left`, `Right`, `Direction` (`0` = Left→Right, `1` = Right→Left, `2` = Two-way), `Mirror`, `Enabled`. |
+| `Pairs` | `[]` | Folder pairs: `Name`, `Left`, `Right`, `Direction` (`0` = Left→Right, `1` = Right→Left, `2` = Two-way), `Mirror`, `KeepVersions`, `Enabled`. |
 | `Source`, `Targets`, `Mirror` | — | Legacy fields from the single-source model. Read once to migrate into `Pairs`, then cleared. |
-| `RecycleDeletedFiles` | `true` | Move would-be-deleted files aside instead of deleting. |
+| `RecycleDeletedFiles` | `true` | Move would-be-deleted files aside instead of deleting. Also where previous versions are kept. |
 | `RecycleRetentionDays` | `30` | How long to keep recycled batches. |
 | `RecycleFolderName` | `_FolderSyncTrash` | Recycle folder name inside each destination. |
 | `GuardLargeDeletions` | `true` | Stop a mirror that would delete an unexpectedly large share of the receiving side. |
-| `LargeDeletionPercent` | `25` | Share of the receiving side that, once exceeded, is treated as suspicious. |
+| `LargeDeletionPercent` | `25` | Share of the receiving side that, once reached, is treated as suspicious. |
 | `LargeDeletionMinimumFiles` | `25` | Never treat fewer files than this as suspicious, whatever the percentage. |
-| `BackupOverwrittenFiles` | `true` | In a two-way pair, keep the copy that a newer version replaced. |
+| `BackupOverwrittenFiles` | `true` | In a two-way pair, keep the copy that a newer version replaced. (A one-directional pair uses its own `KeepVersions`.) |
 | `ExcludeFiles` | `~$*`, `Thumbs.db`, `desktop.ini`, `.DS_Store` | File patterns to skip (robocopy `/XF`). |
 | `ExcludeFolders` | `[]` | Folders to skip (robocopy `/XD`). |
 | `MinMinutesBetweenAutoSyncs` | `15` | Throttle for logon/unlock runs. |
+| `SyncOnChange` | `false` | Sync shortly after files change in a folder a pair copies from. |
+| `SyncOnChangeDelaySeconds` | `60` | How long that folder has to stay quiet first. |
+| `NotifyOnFailure` | `true` | Windows notification when an unattended sync fails or is stopped. |
+| `OverdueAfterDays` | `7` | Warn when a pair has had no successful sync for this many days. `0` switches it off. |
+| `HistoryRetentionDays` | `90` | How long a run stays in the history. |
+| `LogRetentionDays` | `30` | How long each run's log file is kept. |
+| `Theme` | `System` | `System`, `Light` or `Dark`. |
 | `CheckForUpdates` | `true` | Check GitHub for new releases at startup. |
 | `UpdateRepo` | `BhoomilKalyani/FolderSync` | `owner/repo` that publishes releases. |
-| `Email` | disabled | SMTP settings; password stored encrypted. |
+| `Email` | disabled | SMTP settings; password stored encrypted. `Mode` is `Always`, `OnError`, `OnSuccess` or `Weekly`. |
 
 ### Command line
 
 | Argument | Purpose |
 |---|---|
-| *(none)* | Open the window. |
+| *(none)* | Open the window. If Folder Sync is already running in the tray, show its window. |
+| `--tray` | Start in the tray with no window. Used by "start when I sign in". |
 | `--sync` | Sync silently and exit. Used by the scheduled tasks. |
 | `--sync --auto` | Same, but honours the minimum-gap throttle (logon/unlock). |
-| `--repair-schedules` | Re-point schedules at this copy of the app. Run by Setup. |
+| `--trigger daily` \| `monthly` \| `logon` | With `--sync`: which schedule started the run, for the history. |
+| `--repair-schedules` | Re-point schedules (and the start-at-sign-in entry) at this copy of the app. Run by Setup. |
 | `--register-logon` | Register the logon/unlock task. Run by Setup. |
-| `--remove-schedules` | Remove all tasks. Run by the uninstaller. |
+| `--remove-schedules` | Remove all tasks and the start-at-sign-in entry. Run by the uninstaller. |
 
 ---
 
@@ -317,15 +431,22 @@ check any time from the tray menu. Disable with `"CheckForUpdates": false`.
 
 ```
 *.cs, *.xaml                   The app, all in the repo root: WPF windows plus the engine
-  SyncEngine.cs                Runs each pair: list-only pass, recycle, then robocopy
+  SyncEngine.cs                Runs each pair: plan (list-only), guard, recycle, keep versions, then robocopy
   RobocopyOutput.cs            Reads robocopy's output without relying on its (translated) words
   DeletionGuard.cs             Stops a mirror that would delete too much
   RecycleStore.cs              The recycle folder: batches, restore, pruning
-  ScheduleManager.cs           Task Scheduler tasks, registered from XML
+  RunHistory.cs                Each pair's status, the stored runs, the 30-day summary, CSV export
+  Alerts.cs                    When to raise a notification, and how a pair's state is put in words
+  WeeklyDigest.cs              The weekly summary email
+  ChangeWatcher.cs             Watches sending folders and decides when changes have settled
+  ScheduleManager.cs           Task Scheduler tasks, registered from XML and read back as XML
+  StartupRegistration.cs       "Start in the tray when I sign in"
   CloudFolders.cs              Finds cloud storage that syncs into a local folder
   Updater.cs                   Release check, download and SHA-256 verification
   Emailer.cs                   Summary email (MailKit)
   SyncConfig.cs                config.json: load, migrate, save
+  MainWindow*.cs               The window, one file per group of pages (Home, History, Settings)
+  ChangesWindow.xaml           The preview table, and the review of a stopped mirror
 tests/FolderSync.Tests/        xUnit tests
 installer/FolderSync.iss       Inno Setup script
 build-installer.ps1            Publishes self-contained, then compiles the installer
@@ -359,14 +480,21 @@ would point at a path that disappears on the next rebuild. The app warns you if 
 ### Tests
 
 ```powershell
-dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # 320 xUnit tests at 1.2.1
+dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # 512 xUnit tests at 1.3.0
 ```
 
 They cover the parts that can lose files or go wrong silently: reading robocopy's output (including
-real output replayed with every word translated), the large-deletion guard, the recycle folder,
-config loading and migration, and the update check with its checksum verification. Nothing in the
-suite touches your real `config.json` or GitHub. The same suite runs in CI on every pull request
-and push to `main`.
+real output replayed with every word translated), the large-deletion guard and approving past it,
+the recycle folder and previous versions, the list of what each run changed, the run history,
+notifications and the weekly summary, watching for changes, config loading and migration, and the
+update check with its checksum verification. Many of them run the real engine and the real robocopy
+against temporary folders. Nothing in the suite touches your real `config.json` or GitHub. The same
+suite runs in CI on every pull request and push to `main`.
+
+To run a copy of the app itself without touching your real settings — for trying a change, or for
+driving the window in a test — set `FOLDERSYNC_DATA_DIR` to an empty folder first. That copy keeps
+its settings, logs and history there, can run beside the installed one, and leaves the scheduled
+tasks alone (Windows has one set per user, so a test copy may look at them but not change them).
 
 ### Releasing a new version
 
@@ -402,12 +530,16 @@ Google Drive  iCloud    OneDrive     Backup drive
 
 - **robocopy** does the copying — it handles long paths, retries, multithreading and exact
   mirroring far better than hand-written copy code.
-- Deletions in mirror mode are detected with a **list-only pass** first, so they can be moved to
-  the recycle folder before the real mirror runs.
+- Every pass starts with a **list-only run** that names each file it would copy and, for a mirror,
+  each one it would remove. Everything that has to be decided before anything changes comes from
+  that one list — whether a deletion is large enough to be a mistake, what to move to the recycle
+  folder, which files are about to be replaced — and so does everything that is only reported:
+  how much there is to do, the progress count, and the record of what changed.
 - robocopy's output is read without relying on its English words, which are translated on
   non-English Windows: a deletion is recognised as a path inside the receiving folder, a folder by
   its trailing `\`, and the totals by their fixed order.
-- Task Scheduler provides automation; the app itself doesn't need to stay running.
+- Task Scheduler provides automation; the app itself doesn't need to stay running — except for
+  syncing when files change, which is the app watching the folders.
 
 ### Why cloud storage is treated as a folder
 
@@ -438,39 +570,102 @@ install it and it appears. Google Drive is the one special case: it mounts a dri
 - **Two-way never deletes.** robocopy keeps no record of the previous run, so "deleted on one side"
   can't be told apart from "added on the other". Rather than guess, a two-way pair only ever copies.
   Deletions need a one-directional pair with Mirror.
-- **One-way mirrors keep deleted files, not replaced ones.** A file removed from the source is
-  moved to the recycle folder. A file that *changed* is simply replaced at the destination; only
-  two-way pairs keep the version that was replaced.
+- **Previous versions are opt-in for one-directional pairs.** Kept versions live in the recycle
+  folder at the receiving side — which for a cloud folder means they are uploaded too — so a pair
+  keeps them only if you ask it to. Two-way pairs always do, because there a replaced file may be
+  the only copy of someone's edit.
+- **Watching needs the app running.** The schedules start a copy that syncs and exits; watching
+  for changes is the app itself, in the tray. Nothing is installed as a service.
+- **A scheduled run never approves a deletion.** The guard can only be let through by someone
+  looking at the list of files, for that one run, for no more files than they were shown.
+- **Notifications are plain tray notifications.** No extra Windows components, so one raised by a
+  scheduled run lasts only as long as that run can wait; the lasting ones come from the app when it
+  is running in the tray.
 - **One schedule for everything.** Every enabled pair runs together on each trigger. There are no
   per-pair schedules.
-- **Some settings are config-file only.** The deletion-guard thresholds, recycle retention, the
-  minimum gap between automatic syncs and the update check live in `config.json`
-  (**Open config file**) — there is no Settings page yet.
+- **History starts at 1.3.0.** Earlier versions kept only the latest sync, so there is nothing
+  older to show.
 - **Not code-signed.** That needs a paid certificate, so the first install shows a SmartScreen
   warning. In-app updates are checked against the release's SHA-256 instead.
 - **Non-English Windows is covered by tests, not by a real install.** The parser ignores robocopy's
-  words entirely, and the tests replay real robocopy output with every word replaced — but it has
-  not been run on an actual non-English copy of Windows.
+  words entirely, and the tests replay real robocopy output with every word replaced; schedules are
+  read from task XML, which has no translated words in it — but none of it has been run on an actual
+  non-English copy of Windows.
 - **Windows only.** robocopy and Task Scheduler do the heavy lifting, and both are Windows tools.
 
 ## What I'd add next
 
 In priority order:
 
-1. **Previous versions on one-way mirrors.** The biggest real gap: a file overwritten with a bad
-   copy is mirrored everywhere, and today only two-way pairs keep the version it replaced.
-2. **An alert when a backup is overdue.** A pair that has not succeeded for several days should say
-   so on its own, rather than waiting for someone to open the window.
-3. **Review and approve when the guard stops a mirror.** Today the choices are to fix the folder or
-   switch the guard off in `config.json`; showing what would be deleted and letting you approve
-   that one run would be safer.
-4. **A Settings page** for the options that are config-file only.
-5. **A free-space check before copying,** so a full backup drive is reported up front instead of
-   part-way through.
+1. **A free-space check before copying,** so a full backup drive is reported up front instead of
+   part-way through. The plan already knows how many bytes a sync will copy.
+2. **Sync when a drive is plugged in.** A USB backup drive is skipped while it is away; it should
+   catch up the moment it is connected rather than at the next schedule.
+3. **Restore a whole folder from a backup.** Today that means adding a pair in the other direction;
+   a guided "restore from this destination" would be safer for the day it is actually needed.
+4. **Longer-lasting notifications from scheduled runs,** which needs the app registered with
+   Windows as a notification sender.
 
 ---
 
 ## Version history
+
+### 1.3.0
+
+**New**
+
+- **Home page.** The window opens on one line saying how things stand, **Sync now** at the top, a
+  card for each pair (last result, last successful sync, free space) and the last 30 days as a strip
+  of coloured squares.
+- **History.** Every sync is now kept — when it ran, what started it, how long it took, and the
+  files it copied, replaced or removed — and can be exported to CSV. Before, only the latest sync
+  was remembered and logs expired after a week.
+- **Previous versions for one-directional pairs.** A pair can keep the version a changed file
+  replaces, in the recycle folder, and roll it back from **Recycled files**. Off unless you turn it
+  on for the pair. (Two-way pairs already did this.)
+- **Review and approve a stopped mirror.** When the large-deletion guard stops a pair you can see
+  exactly what it would delete and approve that one run, instead of having to switch the guard off.
+  An approval covers no more files than it showed.
+- **Sync when files change.** Optional: watch the folders your pairs copy from and sync about a
+  minute after a change, with the app running in the tray. It can start there when you sign in.
+- **Windows notifications** when a sync nobody was watching fails or is stopped, and when a pair
+  has had no successful sync for a week. Until now a failing scheduled sync said nothing unless
+  email was set up.
+- **Weekly summary email**, as an alternative to an email after every scheduled sync.
+- **Settings page.** The recycle folder, the deletion guard and its thresholds, retention times,
+  the theme and the update check no longer need `config.json` edited by hand.
+
+**Better**
+
+- **Real progress.** A sync now says which pair it is on and how many of its files are done, with a
+  bar that fills; it used to be a moving bar and the pair's name.
+- **Preview is a table** of every file and what would happen to it, not the raw robocopy log. It
+  also says when the guard would stop a pair.
+- **The pairs list no longer cuts text off.** Long names and paths end in "…" with the full value on
+  hover, the direction is an arrow between the two folders, the last result is coloured, and
+  **Edit** and **Remove** are greyed out until a pair is selected.
+- The cloud-storage card folds to one line once you have pairs, the content stops stretching across
+  a maximised window, and counts read "3 pairs" rather than "3 pair(s)".
+- Starting Folder Sync while it is already running in the tray shows its window, rather than a
+  message telling you to look for the icon.
+- The theme you choose is remembered.
+
+**Fixed**
+
+- **Schedules are read correctly on non-English Windows.** Their state and program path were taken
+  from schtasks' list view, whose labels are translated; they are now read from the task's XML,
+  which is the same in every language.
+- **Repairing a schedule no longer switches a paused one back on.**
+- **Tick-box settings save however they are changed** — by a screen reader or the keyboard as well
+  as the mouse.
+
+**Good to know**
+
+- A sync does one extra listing pass for additive pairs (mirrors and two-way pairs already did
+  one). That is what makes the progress count and the list of changes possible.
+- Setup re-registers schedules created by an earlier version once, with the same time and day, so
+  their runs are labelled *Daily schedule* / *Sign-in or unlock* in the history.
+- Log files are now kept for 30 days rather than 7, and the run history for 90.
 
 ### 1.2.1
 

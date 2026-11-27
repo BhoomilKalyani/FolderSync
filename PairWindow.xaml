@@ -54,9 +54,13 @@
                 </ComboBox>
                 <TextBlock x:Name="DirectionHelp" Style="{StaticResource Subtle}" Margin="0,10,0,0"/>
 
-                <CheckBox x:Name="MirrorCheck" Margin="0,14,0,0" Click="Mirror_Changed"
+                <CheckBox x:Name="MirrorCheck" Margin="0,14,0,0" Checked="Mirror_Changed" Unchecked="Mirror_Changed"
                           Content="Mirror — make the receiving folder an exact copy (deletions carry over)"/>
                 <TextBlock x:Name="MirrorHelp" Style="{StaticResource Subtle}" Margin="27,6,0,0"/>
+
+                <CheckBox x:Name="KeepVersionsCheck" Margin="0,14,0,0" Checked="Mirror_Changed" Unchecked="Mirror_Changed"
+                          Content="Keep the previous version when a changed file replaces it"/>
+                <TextBlock x:Name="KeepVersionsHelp" Style="{StaticResource Subtle}" Margin="27,6,0,0"/>
             </StackPanel>
         </Border>
 

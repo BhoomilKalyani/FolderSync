@@ -253,8 +253,13 @@ public class ConfigSafetyTests : IDisposable
             }
         });
 
+        // Keeps reading until the writer has demonstrably been saving alongside, not for a fixed number
+        // of reads. On a busy machine the writer can take a moment to get going - or lose a few rounds to
+        // the reader holding the file - and 300 reads that all finished before its first save proved
+        // nothing, and failed the "did it save at all" check below for no fault in the code.
         int torn = 0;
-        for (int i = 0; i < 300; i++)
+        var giveUp = DateTime.UtcNow.AddSeconds(30);
+        for (int reads = 0; (reads < 300 || Volatile.Read(ref saves) < 3) && DateTime.UtcNow < giveUp; reads++)
         {
             string text;
             try { text = File.ReadAllText(config); }
