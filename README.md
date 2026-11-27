@@ -480,7 +480,7 @@ would point at a path that disappears on the next rebuild. The app warns you if 
 ### Tests
 
 ```powershell
-dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # 510 xUnit tests at 1.3.0
+dotnet test tests\FolderSync.Tests\FolderSync.Tests.csproj          # 512 xUnit tests at 1.3.0
 ```
 
 They cover the parts that can lose files or go wrong silently: reading robocopy's output (including

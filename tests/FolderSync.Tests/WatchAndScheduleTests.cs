@@ -111,7 +111,11 @@ public class WatchAndScheduleTests : IDisposable
         public void Advance(TimeSpan by) => Interlocked.Add(ref _ticks, by.Ticks);
     }
 
-    private static async Task<bool> Eventually(Func<bool> condition, int milliseconds = 6000)
+    /// <summary>
+    /// Waits for something that happens on another thread - a file-system event, a timer tick. Generous
+    /// on purpose: on a busy build server these can take seconds, and it only costs time when it fails.
+    /// </summary>
+    private static async Task<bool> Eventually(Func<bool> condition, int milliseconds = 20000)
     {
         var until = DateTime.UtcNow.AddMilliseconds(milliseconds);
         while (DateTime.UtcNow < until)
@@ -282,9 +286,20 @@ public class WatchAndScheduleTests : IDisposable
 
     // ---------- reading a scheduled task ----------
 
-    // schtasks /Query /XML as printed on this PC for a task created by 1.2.x. Windows leaves out every
-    // setting that has its default value - so an enabled task has no <Enabled> under <Settings> at all.
-    private const string DailyXml = """
+    private const string DailySchedule = "<ScheduleByDay><DaysInterval>1</DaysInterval></ScheduleByDay>";
+    private const string InstalledExe = @"C:\Users\Me\AppData\Local\Programs\FolderSync\FolderSync.exe";
+
+    /// <summary>
+    /// A task as <c>schtasks /Query /XML</c> printed one created by 1.2.x on Windows 11. Windows leaves
+    /// out every setting that has its default value - so an enabled task has no &lt;Enabled&gt; under
+    /// &lt;Settings&gt; at all.
+    ///
+    /// Each variant is built by putting its own pieces into the template, never by searching the text
+    /// for a run of lines: whether a line ends in LF or CRLF depends on how the source file was checked
+    /// out, and a test that depended on that passed on one machine and failed on the build server.
+    /// </summary>
+    private static string TaskXml(string schedule = DailySchedule, string arguments = "--sync",
+                                  string settings = "", string inTrigger = "", string command = InstalledExe) => $"""
         <?xml version="1.0" encoding="UTF-16"?>
         <Task version="1.4" xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">
           <RegistrationInfo>
@@ -298,6 +313,7 @@ public class WatchAndScheduleTests : IDisposable
             </Principal>
           </Principals>
           <Settings>
+            {settings}
             <DisallowStartIfOnBatteries>false</DisallowStartIfOnBatteries>
             <ExecutionTimeLimit>PT2H</ExecutionTimeLimit>
             <IdleSettings>
@@ -306,16 +322,15 @@ public class WatchAndScheduleTests : IDisposable
           </Settings>
           <Triggers>
             <CalendarTrigger>
+              {inTrigger}
               <StartBoundary>2026-07-30T18:30:00</StartBoundary>
-              <ScheduleByDay>
-                <DaysInterval>1</DaysInterval>
-              </ScheduleByDay>
+              {schedule}
             </CalendarTrigger>
           </Triggers>
           <Actions Context="Author">
             <Exec>
-              <Command>C:\Users\Me\AppData\Local\Programs\FolderSync\FolderSync.exe</Command>
-              <Arguments>--sync</Arguments>
+              <Command>{command}</Command>
+              <Arguments>{arguments}</Arguments>
               <WorkingDirectory>C:\Users\Me\AppData\Local\Programs\FolderSync</WorkingDirectory>
             </Exec>
           </Actions>
@@ -325,22 +340,40 @@ public class WatchAndScheduleTests : IDisposable
     [Fact]
     public void An_enabled_task_is_read_with_its_program_arguments_and_time()
     {
-        var info = ScheduleManager.ParseTaskXml(DailyXml);
+        var info = ScheduleManager.ParseTaskXml(TaskXml());
 
         Assert.Equal(ScheduleManager.TaskState.Enabled, info.State);
-        Assert.Equal(@"C:\Users\Me\AppData\Local\Programs\FolderSync\FolderSync.exe", info.Exe);
+        Assert.Equal(InstalledExe, info.Exe);
         Assert.Equal("--sync", info.Arguments);
         Assert.Equal(new TimeOnly(18, 30), info.Time);
         Assert.Null(info.Day);
         Assert.True(info.LacksTrigger);                           // registered before the switch existed
     }
 
+    [Theory]
+    [InlineData("\n")]
+    [InlineData("\r\n")]
+    public void A_task_reads_the_same_whichever_way_its_lines_end(string newline)
+    {
+        // schtasks prints CRLF; a test file may hold either. The reading must not care.
+        string xml = TaskXml(schedule: "<ScheduleByMonth><DaysOfMonth><Day>9</Day></DaysOfMonth></ScheduleByMonth>",
+                             settings: "<Enabled>false</Enabled>")
+            .Replace("\r\n", "\n").Replace("\n", newline);
+
+        var info = ScheduleManager.ParseTaskXml(xml);
+
+        Assert.Equal(ScheduleManager.TaskState.Disabled, info.State);
+        Assert.Equal(InstalledExe, info.Exe);
+        Assert.Equal(new TimeOnly(18, 30), info.Time);
+        Assert.Equal(9, info.Day);
+    }
+
     [Fact]
     public void A_disabled_task_is_recognised_by_the_setting_not_by_a_triggers_own_enabled_flag()
     {
-        string disabled = DailyXml.Replace("<Settings>", "<Settings>\n    <Enabled>false</Enabled>");
+        string disabled = TaskXml(settings: "<Enabled>false</Enabled>");
         // The opposite trap: the task is enabled, but one of its triggers carries <Enabled>false</Enabled>.
-        string triggerOff = DailyXml.Replace("<CalendarTrigger>", "<CalendarTrigger>\n      <Enabled>false</Enabled>");
+        string triggerOff = TaskXml(inTrigger: "<Enabled>false</Enabled>");
 
         Assert.Equal(ScheduleManager.TaskState.Disabled, ScheduleManager.ParseTaskXml(disabled).State);
         Assert.Equal(ScheduleManager.TaskState.Enabled, ScheduleManager.ParseTaskXml(triggerOff).State);
@@ -349,10 +382,9 @@ public class WatchAndScheduleTests : IDisposable
     [Fact]
     public void A_monthly_task_gives_its_day_and_a_new_style_task_names_its_trigger()
     {
-        string monthly = DailyXml
-            .Replace("<ScheduleByDay>\n        <DaysInterval>1</DaysInterval>\n      </ScheduleByDay>",
-                     "<ScheduleByMonth><DaysOfMonth><Day>15</Day></DaysOfMonth><Months><January /></Months></ScheduleByMonth>")
-            .Replace("<Arguments>--sync</Arguments>", "<Arguments>--sync --trigger monthly</Arguments>");
+        string monthly = TaskXml(
+            schedule: "<ScheduleByMonth><DaysOfMonth><Day>15</Day></DaysOfMonth><Months><January /></Months></ScheduleByMonth>",
+            arguments: "--sync --trigger monthly");
 
         var info = ScheduleManager.ParseTaskXml(monthly);
 
@@ -365,8 +397,7 @@ public class WatchAndScheduleTests : IDisposable
     public void A_program_path_with_an_ampersand_or_quotes_is_read_as_the_path()
     {
         // The path is XML-escaped in the task, and some tools quote it.
-        string odd = DailyXml.Replace(@"<Command>C:\Users\Me\AppData\Local\Programs\FolderSync\FolderSync.exe</Command>",
-                                      "<Command>\"C:\\Users\\Tom &amp; Jo\\FolderSync.exe\"</Command>");
+        string odd = TaskXml(command: "\"C:\\Users\\Tom &amp; Jo\\FolderSync.exe\"");
 
         Assert.Equal(@"C:\Users\Tom & Jo\FolderSync.exe", ScheduleManager.ParseTaskXml(odd).Exe);
     }
