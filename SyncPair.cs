@@ -37,6 +37,8 @@ public sealed class SyncPair : INotifyPropertyChanged
         Notify(name);
         Notify(nameof(DirectionText));
         Notify(nameof(ModeText));
+        Notify(nameof(ModeDetail));
+        Notify(nameof(Arrow));
         Notify(nameof(Summary));
     }
 
@@ -82,6 +84,23 @@ public sealed class SyncPair : INotifyPropertyChanged
         set { if (_mirror != value) { _mirror = value; NotifyWithLabels(nameof(Mirror)); } }
     }
 
+    private bool _keepVersions;
+
+    /// <summary>
+    /// For a one-directional pair, keep the version a file had at the receiving side before a changed
+    /// copy replaces it. Off unless chosen: a mirror or an additive pair otherwise overwrites it for
+    /// good, so a file that went wrong at the source goes wrong everywhere.
+    ///
+    /// Ignored for <see cref="SyncDirection.TwoWay"/>, which keeps replaced versions through the global
+    /// <see cref="SyncConfig.BackupOverwrittenFiles"/> setting. Either way the kept copies live in the
+    /// recycle folder, so this needs <see cref="SyncConfig.RecycleDeletedFiles"/> to be on.
+    /// </summary>
+    public bool KeepVersions
+    {
+        get => _keepVersions;
+        set { if (_keepVersions != value) { _keepVersions = value; NotifyWithLabels(nameof(KeepVersions)); } }
+    }
+
     /// <summary>True when this pair may delete files from the receiving side.</summary>
     [JsonIgnore]
     public bool DeletesExtras => Direction != SyncDirection.TwoWay && Mirror;
@@ -99,6 +118,31 @@ public sealed class SyncPair : INotifyPropertyChanged
         get => _lastRunText;
         set { if (_lastRunText != value) { _lastRunText = value; Notify(nameof(LastRunText)); } }
     }
+
+    private PairHealth _lastRunHealth = PairHealth.None;
+
+    /// <summary>Whether the last run was fine, needs a look, or failed - the colour of the status text.</summary>
+    [JsonIgnore]
+    public PairHealth LastRunHealth
+    {
+        get => _lastRunHealth;
+        set { if (_lastRunHealth != value) { _lastRunHealth = value; Notify(nameof(LastRunHealth)); } }
+    }
+
+    /// <summary>The direction as a single character, drawn between the two folders in the grid.</summary>
+    [JsonIgnore]
+    public string Arrow => Direction switch
+    {
+        SyncDirection.ToRight => "→",
+        SyncDirection.ToLeft => "←",
+        _ => "↔",
+    };
+
+    /// <summary>The mode with anything else worth knowing about how the pair treats files.</summary>
+    [JsonIgnore]
+    public string ModeDetail => Direction == SyncDirection.TwoWay
+        ? "Two-way merge"
+        : (Mirror ? "Mirror" : "Additive") + (KeepVersions ? " · keeps versions" : "");
 
     [JsonIgnore]
     public string DirectionText => Direction switch

@@ -83,7 +83,14 @@ public sealed class ConfigUnavailableException : IOException
 }
 
 /// <summary>When a scheduled sync should send a notification email.</summary>
-public enum EmailMode { Always, OnError, OnSuccess }
+public enum EmailMode
+{
+    Always,
+    OnError,
+    OnSuccess,
+    /// <summary>No email per run: one summary a week instead. See <see cref="WeeklyDigest"/>.</summary>
+    Weekly,
+}
 
 /// <summary>
 /// SMTP email-notification settings. The password is stored DPAPI-encrypted
@@ -129,10 +136,12 @@ public sealed class EmailSettings
 
     public string EffectiveFrom => string.IsNullOrWhiteSpace(From) ? Username : From;
 
+    /// <summary>Whether to email about one finished run. Never in weekly mode, which sends a summary instead.</summary>
     public bool ShouldSend(bool success) => Mode switch
     {
         EmailMode.OnError => !success,
         EmailMode.OnSuccess => success,
+        EmailMode.Weekly => false,
         _ => true,
     };
 }
@@ -239,9 +248,56 @@ public sealed class SyncConfig
     /// <summary>Folder names/paths to skip (robocopy /XD).</summary>
     public List<string> ExcludeFolders { get; set; } = new();
 
+    /// <summary>How long a run stays in the history (and so on the History page and the dashboard).</summary>
+    public int HistoryRetentionDays { get; set; } = DefaultHistoryRetentionDays;
+
+    /// <summary>How long the per-run log files are kept. A run older than this still has its history entry.</summary>
+    public int LogRetentionDays { get; set; } = DefaultLogRetentionDays;
+
+    /// <summary>
+    /// Sync shortly after files change in a pair's sending folder. Only works while the app is running
+    /// (it can sit in the tray), because it is the app that does the watching.
+    /// </summary>
+    public bool SyncOnChange { get; set; }
+
+    /// <summary>How long a watched folder has to stay quiet before the sync starts.</summary>
+    public int SyncOnChangeDelaySeconds { get; set; } = DefaultSyncOnChangeDelaySeconds;
+
+    /// <summary>Show a Windows notification when a sync that nobody was watching fails or is stopped.</summary>
+    public bool NotifyOnFailure { get; set; } = true;
+
+    /// <summary>
+    /// Warn when a pair has not synced successfully for this many days - which is how an unplugged
+    /// backup drive or a broken schedule gets noticed. 0 switches the warning off.
+    /// </summary>
+    public int OverdueAfterDays { get; set; } = DefaultOverdueAfterDays;
+
+    /// <summary>"System", "Light" or "Dark". Anything else is read as "System".</summary>
+    public string Theme { get; set; } = "System";
+
+    public const int DefaultHistoryRetentionDays = 90;
+    public const int DefaultLogRetentionDays = 30;
+    public const int DefaultSyncOnChangeDelaySeconds = 60;
+    public const int DefaultOverdueAfterDays = 7;
+
+    /// <summary>The theme setting as the enum the window uses.</summary>
     [JsonIgnore]
-    public static string AppDataDir =>
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "FolderSync");
+    public AppTheme ThemeChoice =>
+        string.Equals(Theme, "Light", StringComparison.OrdinalIgnoreCase) ? AppTheme.Light
+        : string.Equals(Theme, "Dark", StringComparison.OrdinalIgnoreCase) ? AppTheme.Dark
+        : AppTheme.System;
+
+    /// <summary>
+    /// Whether <paramref name="pair"/> keeps the version a changed file replaces. Two-way pairs follow
+    /// <see cref="BackupOverwrittenFiles"/>; a one-directional pair chooses for itself. Either way the
+    /// kept versions go in the recycle folder, so turning recycling off turns this off too. The engine
+    /// and the health check both read this, so they cannot disagree about it.
+    /// </summary>
+    public bool KeepsVersionsFor(SyncPair pair) =>
+        RecycleDeletedFiles && (pair.Direction == SyncDirection.TwoWay ? BackupOverwrittenFiles : pair.KeepVersions);
+
+    [JsonIgnore]
+    public static string AppDataDir => AppInstance.DataDir;
 
     [JsonIgnore]
     public static string ConfigPath => Path.Combine(AppDataDir, "config.json");
@@ -493,6 +549,15 @@ public sealed class SyncConfig
               + $"using {DefaultLargeDeletionPercent}.");
             cfg.LargeDeletionPercent = DefaultLargeDeletionPercent;
         }
+
+        // Hand-edited values that would make a setting meaningless fall back to its default. A zero
+        // retention would delete the run that was just recorded; a zero delay would start a sync on
+        // the first byte of a file that is still being written.
+        if (cfg.HistoryRetentionDays is < 1 or > 3650) cfg.HistoryRetentionDays = DefaultHistoryRetentionDays;
+        if (cfg.LogRetentionDays is < 1 or > 3650) cfg.LogRetentionDays = DefaultLogRetentionDays;
+        if (cfg.SyncOnChangeDelaySeconds is < 5 or > 3600) cfg.SyncOnChangeDelaySeconds = DefaultSyncOnChangeDelaySeconds;
+        if (cfg.OverdueAfterDays is < 0 or > 365) cfg.OverdueAfterDays = DefaultOverdueAfterDays;
+        cfg.Theme = cfg.ThemeChoice.ToString();
 
         bool changed = cfg.MigrateTargetsToPairs();
         changed |= cfg.DropUnusableCloudAccountPairs();

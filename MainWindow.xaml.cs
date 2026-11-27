@@ -5,11 +5,16 @@ using System.Globalization;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
+using System.Windows.Threading;
 using WinForms = System.Windows.Forms;
 
 namespace FolderSync;
 
+/// <summary>
+/// The main window. Split across files by page: this one holds what is shared - start-up, navigation,
+/// the folder pairs, running a sync, schedules, email, recycled files, updates and the tray icon.
+/// See MainWindow.Home.cs, MainWindow.History.cs and MainWindow.Settings.cs for the rest.
+/// </summary>
 public partial class MainWindow : Window
 {
     private readonly SyncConfig _config;
@@ -17,16 +22,18 @@ public partial class MainWindow : Window
     private readonly WinForms.NotifyIcon _tray;
     private readonly object _logLock = new();
     private bool _loaded;
+    private bool _exiting;
 
     private CancellationTokenSource? _cts;
     private UpdateInfo? _pendingUpdate;
     private List<RecycleBatch> _batches = new();
 
-    /// <summary>Options for the per-destination Mode column.</summary>
     private const string DeveloperName = "Bhoomil Kalyani";
     private const string DeveloperEmail = "bhoomil.kalyani999@gmail.com";
 
-    // The Mode picker's choices live in MainWindow.xaml as the "ModeOptionList" resource.
+    // The pages, in the order they appear in the sidebar.
+    private const int NavHome = 0, NavPairs = 1, NavSchedule = 2, NavHistory = 3,
+                      NavRecycled = 4, NavNotifications = 5, NavSettings = 6, NavAbout = 7;
 
     private readonly (string task, string label)[] _scheduleTasks =
     {
@@ -44,13 +51,23 @@ public partial class MainWindow : Window
     private ComboBox _dailyHour = null!, _dailyMinute = null!;
     private ComboBox _monthlyHour = null!, _monthlyMinute = null!, _monthlyDay = null!;
 
-    public MainWindow()
+    /// <param name="startHidden">Started by Windows at sign-in: the window is not shown until it is asked for.</param>
+    public MainWindow(bool startHidden = false)
     {
         InitializeComponent();
-
         _config = SyncConfig.Load();
+        ThemeManager.Apply(_config.ThemeChoice);
+
         _pairs = new ObservableCollection<SyncPair>(_config.Pairs);
-        _pairs.CollectionChanged += (_, _) => { SyncPairsToConfig(); SaveConfig(); UpdateRecycleNote(); };
+        foreach (var pair in _pairs) pair.PropertyChanged += Pair_PropertyChanged;
+        _pairs.CollectionChanged += (_, e) =>
+        {
+            if (e.OldItems is not null) foreach (SyncPair gone in e.OldItems) gone.PropertyChanged -= Pair_PropertyChanged;
+            if (e.NewItems is not null) foreach (SyncPair added in e.NewItems) added.PropertyChanged += Pair_PropertyChanged;
+            SyncPairsToConfig();
+            SaveConfig();
+            PairsChanged();
+        };
 
         Icon = AppResources.WindowIcon;
         SourceInitialized += (_, _) => ThemeManager.ApplyWindowChrome(this);
@@ -58,39 +75,71 @@ public partial class MainWindow : Window
         VersionText.Text = $"Version {Updater.CurrentVersion}";
         AboutVersion.Text = $"Folder Sync {Updater.CurrentVersion}";
         CopyrightText.Text = $"Copyright © {DateTime.Now.Year} {DeveloperName}. All rights reserved.";
-        AboutPaths.Text = $"Settings:  {SyncConfig.ConfigPath}\nLogs:      {SyncConfig.LogDir}\nProgram:   {ScheduleManager.ExePath}";
+        AboutPaths.Text = $"Settings:  {SyncConfig.ConfigPath}\nLogs:      {SyncConfig.LogDir}\n"
+                        + $"History:   {RunHistoryStore.DefaultFolder}\nProgram:   {ScheduleManager.ExePath}";
 
         PairGrid.ItemsSource = _pairs;
         LoadConfigIntoUi();
-        RefreshMountedCloud();
+        LoadSettingsIntoUi();
+        RefreshMountedCloud(firstTime: true);
         RefreshPairStatuses();
         BuildScheduleRows();
-        RefreshLastRunSummary();
+        UpdateThemeToggle();
 
         _tray = CreateTray();
+        _watcher.Due += keys => Dispatcher.BeginInvoke(new Action(() => OnWatchedFoldersChanged(keys)));
+        _watcher.StatusChanged += () => Dispatcher.BeginInvoke(new Action(ShowWatchStatus));
+        ListenForShowRequests();
 
         _loaded = true;
+        RefreshHome();
 
         if (_config.IsUnconfigured)
-            StatusText.Text = "Set a source folder and add at least one destination to begin.";
+            Status = "Add a folder pair to begin.";
 
-        Loaded += async (_, _) =>
+        // Started once the message loop is running, whether or not the window is ever shown. Not in the
+        // constructor itself: it runs before WPF has a synchronisation context, so the code after each
+        // background await would resume on a worker thread and fail touching the controls.
+        Dispatcher.BeginInvoke(new Action(() => _ = StartBackgroundWorkAsync()), DispatcherPriority.ApplicationIdle);
+
+        Loaded += async (_, _) => await FirstShownAsync();
+    }
+
+    /// <summary>
+    /// Everything that has to be going whether the window is on screen or sitting in the tray: reading
+    /// the schedules, watching folders, noticing scheduled runs, and the update check.
+    /// </summary>
+    private async Task StartBackgroundWorkAsync()
+    {
+        try
         {
-            // Started here, not in the constructor: the constructor runs before WPF's message loop has
-            // a synchronisation context, so the code after each background await resumed on a worker
-            // thread and failed touching the controls ("a different thread owns it").
-            RefreshScheduleStates();
-            _ = LoadScheduleTimesFromTasksAsync();
+            WatchHistoryFolder();
+            ApplyWatchSettings();
+            StartClock();
 
-            if (_config.LoadProblem is { } problem)
-                MessageWindow.Warn(this, "Settings could not be read",
-                    problem + "\n\nScheduled syncs will report a failure until the folder pairs are set up "
-                    + "again. The settings folder is listed on the About page.");
+            await RefreshSchedulesAsync();
+            await RefreshHomeAsync();
+            CheckForOverduePairs();
 
-            await WarnAboutStaleTaskTargetsAsync();
             if (_config.CheckForUpdates && Updater.IsCheckDue())
                 await CheckForUpdatesAsync(manual: false);
-        };
+        }
+        catch (Exception ex)
+        {
+            AppendEvent("[Startup] " + ex.Message);
+        }
+    }
+
+    /// <summary>The first time the window is actually shown: the things that need someone to read them.</summary>
+    private async Task FirstShownAsync()
+    {
+        if (_config.LoadProblem is { } problem)
+            MessageWindow.Warn(this, "Settings could not be read",
+                problem + "\n\nScheduled syncs will report a failure until the folder pairs are set up "
+                + "again. The settings folder is listed on the About page.");
+
+        await _schedulesRead.Task;
+        await WarnAboutStaleTaskTargetsAsync();
     }
 
     // ===================== Config <-> UI =====================
@@ -108,23 +157,40 @@ public partial class MainWindow : Window
         EmailTo.Text = em.To;
         EmailHost.Text = em.SmtpHost;
         EmailPort.Text = em.SmtpPort.ToString(CultureInfo.InvariantCulture);
-        EmailModeBox.SelectedIndex = em.Mode switch { FolderSync.EmailMode.OnError => 1, FolderSync.EmailMode.OnSuccess => 2, _ => 0 };
+        EmailModeBox.SelectedIndex = em.Mode switch
+        {
+            FolderSync.EmailMode.OnError => 1,
+            FolderSync.EmailMode.OnSuccess => 2,
+            FolderSync.EmailMode.Weekly => 3,
+            _ => 0,
+        };
         UpdatePasswordHint();
+        UpdateEmailModeHint();
+        UpdateUnlockNote();
+    }
 
+    private void UpdateUnlockNote()
+    {
         UnlockNote.Text = "“Logon / unlock” syncs when you sign in and each time you unlock the screen, "
-                        + $"at most once every {_config.MinMinutesBetweenAutoSyncs} minutes. "
+                        + (_config.MinMinutesBetweenAutoSyncs > 0
+                            ? $"at most once every {Humanise.Count(_config.MinMinutesBetweenAutoSyncs, "minute")}. "
+                            : "with no limit on how often. ")
                         + "On a laptop that sleeps rather than shutting down, this is the trigger that keeps things current.";
     }
 
     private void UpdateRecycleNote()
     {
         var deleting = _pairs.Where(p => p.Enabled && p.DeletesExtras).ToList();
-        RecycleNote.Text = deleting.Count == 0
+        string mirrors = deleting.Count == 1 ? "1 pair mirrors" : $"{deleting.Count} pairs mirror";
+
+        string note = deleting.Count == 0
             ? "No enabled pair deletes anything right now."
             : _config.RecycleDeletedFiles
-                ? $"{deleting.Count} pair(s) mirror, so deletions carry over — removed files are kept "
-                  + $"for {_config.RecycleRetentionDays} days in “{_config.RecycleFolderName}” (see Recycled files)."
-                : $"{deleting.Count} pair(s) mirror and deletions are PERMANENT (recycle is off in config.json).";
+                ? $"{mirrors}, so deletions carry over — removed files are kept for "
+                  + $"{Humanise.Count(_config.RecycleRetentionDays, "day")} and can be put back from Recycled files."
+                : $"{mirrors}, and deletions are PERMANENT: the recycle folder is switched off in Settings.";
+
+        RecycleNote.Text = note + " Double-click a pair to edit it.";
     }
 
     /// <summary>
@@ -136,7 +202,7 @@ public partial class MainWindow : Window
     private void SyncPairsToConfig() => _config.Pairs = _pairs.ToList();
 
     /// <summary>
-    /// Fills in each pair's "Last run" column from the stored per-pair history, so a pair that has
+    /// Fills in each pair's "Last sync" column from the stored per-pair history, so a pair that has
     /// been quietly failing is obvious without opening a log.
     /// </summary>
     private void RefreshPairStatuses()
@@ -144,11 +210,20 @@ public partial class MainWindow : Window
         var history = PairHistory.Load();
         foreach (var pair in _pairs)
         {
-            pair.LastRunText = history.TryGetValue(PairHistory.KeyFor(pair.Left, pair.Right), out var status)
-                ? status.Text
-                : "Never run";
+            if (history.TryGetValue(KeyOf(pair), out var status))
+            {
+                pair.LastRunText = status.Text;
+                pair.LastRunHealth = status.Health;
+            }
+            else
+            {
+                pair.LastRunText = "Never run";
+                pair.LastRunHealth = PairHealth.None;
+            }
         }
     }
+
+    private static string KeyOf(SyncPair pair) => PairHistory.KeyFor(pair.Left, pair.Right);
 
     private void SaveConfig()
     {
@@ -166,50 +241,109 @@ public partial class MainWindow : Window
         .Split(new[] { ';', ',' }, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
         .ToList();
 
-    private void Skip_LostFocus(object sender, RoutedEventArgs e) => SaveConfig();
-
-    /// <summary>A pair was switched on or off.</summary>
-    private void EnabledCheck_Click(object sender, RoutedEventArgs e)
+    private void Skip_LostFocus(object sender, RoutedEventArgs e)
     {
-        if (!_loaded) return;
         SaveConfig();
-        UpdateRecycleNote();
+        ApplyWatchSettings();      // the skip list is also what the watcher ignores
     }
 
-    private void DestGrid_CellEditEnding(object? sender, DataGridCellEditEndingEventArgs e) =>
-        Dispatcher.BeginInvoke(new Action(SaveConfig));
+    /// <summary>
+    /// A pair was switched on or off in the list. Followed from the pair itself rather than from a click
+    /// on the tick-box, so it is saved however the tick-box was changed - the keyboard and a screen
+    /// reader change it without a click.
+    /// </summary>
+    private void Pair_PropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (!_loaded || e.PropertyName != nameof(SyncPair.Enabled)) return;
+        SaveConfig();
+        PairsChanged();
+    }
+
+    /// <summary>Something about the pairs changed: everything that describes them has to follow.</summary>
+    private void PairsChanged()
+    {
+        if (!_loaded) return;
+        UpdateRecycleNote();
+        RefreshMountedCloud();
+        RefreshPairStatuses();
+        RefreshHome();
+        ApplyWatchSettings();
+    }
 
     // ===================== Navigation / theme =====================
 
+    private FrameworkElement[] Pages => new FrameworkElement[]
+    {
+        PageHome, PageSync, PageSchedule, PageHistory, PageRecycled, PageEmail, PageSettings, PageAbout,
+    };
+
     private void Nav_SelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (PageSync is null) return;   // during construction
+        if (PageAbout is null) return;   // during construction
 
-        var pages = new[] { PageSync, PageSchedule, PageEmail, PageRecycled, PageAbout };
+        var pages = Pages;
         for (int i = 0; i < pages.Length; i++)
             pages[i].Visibility = i == Nav.SelectedIndex ? Visibility.Visible : Visibility.Collapsed;
+        ContentScroll.ScrollToTop();
 
+        if (!_loaded) return;
         switch (Nav.SelectedIndex)
         {
-            case 0: RefreshMountedCloud(); break;   // a provider may have been installed since
-            case 1: RefreshScheduleStates(); break;
-            case 3: LoadRecycled(); break;
+            case NavHome: _ = RefreshHomeAsync(); break;
+            case NavPairs: RefreshMountedCloud(); break;   // a provider may have been installed since
+            case NavSchedule: RefreshScheduleStates(); ShowWatchStatus(); break;
+            case NavHistory: _ = LoadHistoryAsync(); break;
+            case NavRecycled: LoadRecycled(); break;
+            case NavSettings: LoadSettingsIntoUi(); break;
         }
     }
 
+    private void GoTo(int page) => Nav.SelectedIndex = page;
+
+    private void GoToPairs_Click(object sender, RoutedEventArgs e) => GoTo(NavPairs);
+    private void GoToHistory_Click(object sender, RoutedEventArgs e) => GoTo(NavHistory);
+    private void GoToSettings_Click(object sender, RoutedEventArgs e) => GoTo(NavSettings);
+
     private void ThemeToggle_Click(object sender, RoutedEventArgs e)
     {
-        ThemeManager.Apply(ThemeManager.IsDark ? AppTheme.Light : AppTheme.Dark);
-        ThemeToggle.Content = ThemeManager.IsDark ? "Switch to light mode" : "Switch to dark mode";
+        // The link flips between the two; "Same as Windows" is chosen on the Settings page.
+        _config.Theme = ThemeManager.IsDark ? "Light" : "Dark";
+        ApplyTheme();
+        SaveConfig();
     }
 
+    private void ApplyTheme()
+    {
+        ThemeManager.Apply(_config.ThemeChoice);
+        UpdateThemeToggle();
+        if (_loaded) SelectTheme();
+    }
+
+    /// <summary>The link names the mode it switches to, from the start rather than only after a click.</summary>
+    private void UpdateThemeToggle() =>
+        ThemeToggle.Content = ThemeManager.IsDark ? "Switch to light mode" : "Switch to dark mode";
+
     // ===================== Folder pairs =====================
+
+    private void PairGrid_SelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        // Edit and Remove act on the selected pair, so they are greyed out until there is one, rather
+        // than being clickable and answering "select a pair first".
+        bool selected = PairGrid.SelectedItem is SyncPair;
+        EditPairButton.IsEnabled = selected;
+        RemovePairButton.IsEnabled = selected;
+    }
 
     private void AddPair_Click(object sender, RoutedEventArgs e)
     {
         // Additive by default: a new pair cannot delete anything until Mirror is ticked.
         var pair = new SyncPair { Direction = SyncDirection.ToRight, Mirror = false, Enabled = true };
-        var dlg = new PairWindow(pair, isNew: true) { Owner = this };
+        AddPair(pair);
+    }
+
+    private void AddPair(SyncPair pair)
+    {
+        var dlg = new PairWindow(pair, isNew: true, _config) { Owner = this };
         if (dlg.ShowDialog() != true) return;
 
         if (_pairs.Any(p => SamePair(p, pair)))
@@ -219,7 +353,6 @@ public partial class MainWindow : Window
         }
         _pairs.Add(pair);
         PairGrid.SelectedItem = pair;
-        RefreshMountedCloud();   // the new pair may cover a detected cloud folder
     }
 
     private void EditPair_Click(object sender, RoutedEventArgs e) => EditSelectedPair();
@@ -229,28 +362,19 @@ public partial class MainWindow : Window
 
     private void EditSelectedPair()
     {
-        if (PairGrid.SelectedItem is not SyncPair pair)
-        {
-            MessageWindow.Info(this, "No pair selected", "Select a pair in the list first.");
-            return;
-        }
+        if (PairGrid.SelectedItem is not SyncPair pair) return;
 
-        var dlg = new PairWindow(pair, isNew: false) { Owner = this };
+        var dlg = new PairWindow(pair, isNew: false, _config) { Owner = this };
         if (dlg.ShowDialog() != true) return;
 
         // The pair object edits in place and raises change notifications, so the grid follows.
         SaveConfig();
-        UpdateRecycleNote();
-        RefreshMountedCloud();
+        PairsChanged();
     }
 
     private void RemovePair_Click(object sender, RoutedEventArgs e)
     {
-        if (PairGrid.SelectedItem is not SyncPair pair)
-        {
-            MessageWindow.Info(this, "No pair selected", "Select a pair in the list first.");
-            return;
-        }
+        if (PairGrid.SelectedItem is not SyncPair pair) return;
 
         if (MessageWindow.Confirm(this, "Remove pair",
                 $"Stop syncing this pair?\n\n{pair.DisplayName}\n{pair.Left}\n{pair.Right}\n\n"
@@ -283,29 +407,54 @@ public partial class MainWindow : Window
 
     // ===================== Sync / preview =====================
 
+    /// <summary>The most changes a preview lists. Beyond this the table is no longer something to read.</summary>
+    private const int PreviewLimit = 20000;
+
     private async void Sync_Click(object sender, RoutedEventArgs e) => await RunSyncAsync(listOnly: false);
     private async void Preview_Click(object sender, RoutedEventArgs e) => await RunSyncAsync(listOnly: true);
 
     private void Cancel_Click(object sender, RoutedEventArgs e)
     {
         _cts?.Cancel();
-        StatusText.Text = "Cancelling…";
+        Status = "Cancelling…";
     }
 
-    private async Task RunSyncAsync(bool listOnly)
+    /// <summary>
+    /// Runs a sync or a preview from the window.
+    /// </summary>
+    /// <param name="trigger">
+    /// What started it. A run started by a file change has nobody waiting for it, so it asks no
+    /// questions and shows no dialogs: anything that would have needed one is skipped or logged.
+    /// </param>
+    /// <param name="onlyPairs">Only these pairs, or null for every enabled one.</param>
+    /// <param name="approved">Deletions that were reviewed and approved for this run (see <see cref="SyncOptions"/>).</param>
+    /// <returns>The result, or null when nothing ran.</returns>
+    private async Task<SyncResult?> RunSyncAsync(bool listOnly, RunTrigger trigger = RunTrigger.Manual,
+                                                IReadOnlyCollection<string>? onlyPairs = null,
+                                                IReadOnlyDictionary<string, int>? approved = null,
+                                                bool showPreview = true)
     {
-        if (_cts is not null) return;   // already running
+        bool quiet = trigger != RunTrigger.Manual;
+
+        if (_cts is not null)      // already running
+        {
+            if (quiet && onlyPairs is not null) _watcher.Requeue(onlyPairs);
+            return null;
+        }
 
         SaveConfig();
 
-        var active = _config.ActivePairs.ToList();
+        var active = _config.ActivePairs
+            .Where(p => onlyPairs is null || onlyPairs.Contains(KeyOf(p), StringComparer.OrdinalIgnoreCase))
+            .ToList();
         if (active.Count == 0)
         {
+            if (quiet) return null;
             MessageWindow.Warn(this, "Nothing to sync",
                 "No folder pair is enabled, so there is nothing to do.\n\n"
-                + "Use “Add pair…” to set up two folders, then try again.");
+                + "Use “Add pair…” on the Folder pairs page to set up two folders, then try again.");
             Status = "Add at least one folder pair.";
-            return;
+            return null;
         }
 
         // An unplugged drive is not a problem to be warned about - the pair just waits for it - so it
@@ -318,7 +467,7 @@ public partial class MainWindow : Window
                              .Where(x => x.problem is not null)
                              .ToList();
 
-        if (broken.Count > 0)
+        if (!quiet && broken.Count > 0)
         {
             string list = string.Join("\n", broken.Select(x => $"  • {x.pair.DisplayName} — {x.problem}"));
 
@@ -327,7 +476,7 @@ public partial class MainWindow : Window
                 MessageWindow.Warn(this, "Nothing can be synced",
                     $"Every pair that could run has a problem:\n\n{list}");
                 Status = "Fix the folder pairs and try again.";
-                return;
+                return null;
             }
 
             if (!MessageWindow.Confirm(this, "Some pairs cannot run",
@@ -335,19 +484,20 @@ public partial class MainWindow : Window
                     primary: "Sync anyway", tone: DialogTone.Warning))
             {
                 Status = "Cancelled.";
-                return;
+                return null;
             }
         }
-        else if (offline.Count == active.Count)
+        else if (!quiet && offline.Count == active.Count)
         {
             MessageWindow.Info(this, "Nothing to sync yet",
                 "Every enabled pair uses a drive that is not connected:\n\n"
                 + string.Join("\n", offline.Select(p => $"  • {p.DisplayName} — {p.MissingDrive()}"))
                 + "\n\nConnect the drive and sync again. This is not an error.");
             Status = "Waiting for a drive to be connected.";
-            return;
+            return null;
         }
 
+        string statusBefore = StatusText.Text;
         _cts = new CancellationTokenSource();
         SetBusy(true);
         Status = listOnly ? "Previewing…" : "Syncing…";
@@ -355,19 +505,30 @@ public partial class MainWindow : Window
         var log = new StringBuilder();
         var engine = new SyncEngine(_config);
         engine.Log += line => { lock (_logLock) log.AppendLine(line); };
-        engine.Progress += p => Dispatcher.Invoke(() => Status = p);
+        engine.Progress += p => Dispatcher.BeginInvoke(new Action(() => ShowProgress(p)));
+
+        var options = new SyncOptions
+        {
+            ListOnly = listOnly,
+            OnlyPairs = onlyPairs,
+            ApprovedDeletions = approved,
+            ChangeLimit = listOnly ? PreviewLimit : new SyncOptions().ChangeLimit,
+        };
 
         SyncResult? result = null;
-        bool busyElsewhere = false;
+        bool busyElsewhere = false, cancelled = false;
+        string? fatal = null;
         var token = _cts.Token;
+        if (!listOnly) _watcher.SyncStarted();
         try
         {
             // A real sync takes the cross-process lock, so it cannot overlap a scheduled run over the
             // same folders. Preview changes nothing and needs no lock.
             result = listOnly
-                ? await Task.Run(() => engine.RunAsync(token, listOnly: true))
+                ? await Task.Run(() => engine.RunAsync(options, token))
                 : await Task.Run(() => SyncLock.Run(
-                      () => engine.RunAsync(token).GetAwaiter().GetResult(), TimeSpan.Zero));
+                      () => engine.RunAsync(options, token).GetAwaiter().GetResult(), TimeSpan.Zero,
+                      AppInstance.SyncLockName));
         }
         catch (SyncAlreadyRunningException)
         {
@@ -375,16 +536,20 @@ public partial class MainWindow : Window
         }
         catch (OperationCanceledException)
         {
+            cancelled = true;
             lock (_logLock) log.AppendLine("CANCELLED by user.");
-            Status = "Cancelled.";
+            result = engine.Current;   // what had been done before it was stopped
         }
         catch (Exception ex)
         {
+            fatal = ex.Message;
             lock (_logLock) log.AppendLine("FATAL: " + ex);
-            Status = "Failed.";
+            result = engine.Current;
+            if (result is not null) result.Success = false;
         }
         finally
         {
+            if (!listOnly) _watcher.SyncFinished();
             SetBusy(false);
             _cts.Dispose();
             _cts = null;
@@ -393,42 +558,97 @@ public partial class MainWindow : Window
         if (busyElsewhere)
         {
             Status = "A scheduled sync is running right now — try again when it has finished.";
-            return;
+            if (quiet && onlyPairs is not null) _watcher.Requeue(onlyPairs);
+            return null;
         }
 
         if (listOnly)
         {
-            TryWrite(SyncConfig.NewPreviewLogPath(), log.ToString());
-            SyncConfig.CleanupOldLogs(7);
-            if (result is not null) Status = "Preview ready (also saved to the log folder).";
-            new TextWindow("Preview", "Changes that would be made — nothing has been altered", log.ToString())
-            { Owner = this }.ShowDialog();
-            return;
+            string logText;
+            lock (_logLock) logText = log.ToString();
+            TryWrite(SyncConfig.NewPreviewLogPath(), logText);
+            SyncConfig.CleanupOldLogs(_config.LogRetentionDays);
+
+            if (cancelled || fatal is not null || result is null)
+            {
+                Status = cancelled ? "Cancelled." : "The preview failed — see the log folder.";
+                return null;
+            }
+
+            // A preview made on the way to something else (reviewing a stopped mirror) leaves the status
+            // line saying what it said: that line is still about the last sync.
+            Status = showPreview ? "Preview ready (also saved to the log folder)." : statusBefore;
+            if (showPreview) ShowPreview(result, logText);
+            return result;
         }
 
-        TryWrite(SyncConfig.NewSyncLogPath(), log.ToString());
+        string logPath = SyncConfig.NewSyncLogPath();
+        lock (_logLock) TryWrite(logPath, log.ToString());
         SyncConfig.RecordSyncTime();
-        SyncConfig.CleanupOldLogs(7);
+        SyncConfig.CleanupOldLogs(_config.LogRetentionDays);
 
-        if (result is null) return;
+        if (result is null)
+        {
+            Status = "Failed.";
+            return null;
+        }
+        if (result.Finished == default) result.Finished = DateTime.Now;
 
-        LastRun.Save(result);
+        // A run that was stopped part-way is recorded in the history, but it does not replace the
+        // summary of the last complete sync.
+        if (!cancelled) LastRun.Save(result);
         PairHistory.Record(result);
-        RefreshLastRunSummary();
+
+        var record = RunRecord.From(result, trigger, logPath);
+        if (fatal is not null) record.Note = "The sync stopped unexpectedly: " + fatal;
+        RunHistoryStore.Save(record);
+        _ownRuns.Add(record.Id);       // so the folder watcher does not treat it as someone else's run
+        RunHistoryStore.Prune(_config.HistoryRetentionDays);
+
         RefreshPairStatuses();
+        _ = RefreshHomeAsync();
+        if (Nav.SelectedIndex == NavHistory) _ = LoadHistoryAsync();
 
         int skipped = result.Targets.Count(t => t.Skipped);
-        string skippedNote = skipped > 0 ? $" {skipped} skipped (drive not connected)." : "";
+        string skippedNote = skipped > 0 ? $" {Humanise.Count(skipped, "pair")} skipped (drive not connected)." : "";
+        int copied = result.Targets.Sum(t => t.FilesCopied);
+        string copiedNote = copied > 0 ? $" {Humanise.Count(copied, "file")} copied." : " Nothing needed copying.";
+        string lead = trigger == RunTrigger.FileChange ? "Synced after a file change" : "Done";
 
-        Status = result.Success
-            ? $"Done — {DateTime.Now:HH:mm:ss}.{skippedNote}"
-            : $"Completed with errors — {DateTime.Now:HH:mm:ss}.{skippedNote}";
+        Status = cancelled ? $"Cancelled — {DateTime.Now:HH:mm:ss}."
+               : fatal is not null ? $"Failed — {DateTime.Now:HH:mm:ss}. The details are in the log."
+               : result.Success ? $"{lead} — {DateTime.Now:HH:mm:ss}.{copiedNote}{skippedNote}"
+               : $"Completed with errors — {DateTime.Now:HH:mm:ss}.{skippedNote}";
+
+        if (quiet)
+        {
+            // Nobody asked for this run, so it only speaks up if it went wrong.
+            ShowAlertFor(record);
+
+            // The weekly summary is sent by whichever unattended run comes first after the week is up.
+            // Someone who only syncs on file changes has no scheduled run to do it, so these count too.
+            var config = _config;
+            _ = Task.Run(() =>
+            {
+                if (WeeklyDigest.SendIfDue(config, DateTime.Now) is { } line) AppendEvent(line);
+            });
+            return result;
+        }
+
+        if (cancelled) return result;
 
         int recycled = result.Targets.Sum(t => t.FilesRecycled);
         _tray.ShowBalloonTip(5000, "Folder Sync",
             (result.Success ? "Sync completed successfully." : "Sync completed with errors — see the log.")
-            + (recycled > 0 ? $" {recycled} deleted item(s) moved to “{_config.RecycleFolderName}”." : ""),
+            + (recycled > 0 ? $" {Humanise.Count(recycled, "deleted item")} kept in the recycle folder." : ""),
             result.Success ? WinForms.ToolTipIcon.Info : WinForms.ToolTipIcon.Warning);
+
+        // A mirror the guard stopped is the one failure that can be put right from here.
+        var stopped = result.Targets.FirstOrDefault(t => t.GuardStopped);
+        if (stopped is not null && approved is null)
+            await OfferReviewAsync(stopped);
+
+        return result;
     }
 
     /// <summary>The status line under the sync buttons.</summary>
@@ -444,25 +664,79 @@ public partial class MainWindow : Window
         HealthButton.IsEnabled = !busy && !_healthRunning;
         CancelButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
         Progress.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+        Progress.IsIndeterminate = true;      // until the first count arrives
+        Progress.Value = 0;
     }
 
-    private void RefreshLastRunSummary()
+    /// <summary>
+    /// Shows where a run has got to: which pair, and how many of its files are done. While a pair is
+    /// still being checked nothing can be counted, so the bar only moves; once the count is known it
+    /// fills as files are copied.
+    /// </summary>
+    private void ShowProgress(SyncProgress p)
     {
-        var last = LastRun.Load();
-        if (last is null)
+        if (_cts is null) return;      // a late report from a run that has already finished
+
+        Status = p.Text;
+        if (p.Fraction is { } fraction)
         {
-            LastRunText.Text = "No sync recorded yet.";
-            LastRunGrid.Visibility = Visibility.Collapsed;
-            return;
+            Progress.IsIndeterminate = false;
+            Progress.Value = fraction * 100;
+        }
+        else
+        {
+            Progress.IsIndeterminate = true;
+        }
+    }
+
+    /// <summary>The preview as a table: every file, what would happen to it, and where.</summary>
+    private void ShowPreview(SyncResult result, string logText)
+    {
+        var rows = new List<ChangeRow>();
+        var warnings = new List<string>();
+        int toCopy = 0, toDelete = 0, omitted = 0;
+        long bytes = 0;
+
+        foreach (var plan in result.Plans)
+        {
+            if (plan.Blocked)
+            {
+                warnings.Add($"{plan.Name} would not run: {plan.Note}.");
+                continue;
+            }
+            if (plan.GuardWouldStop)
+                warnings.Add($"{plan.Name} would be stopped by the large-deletion guard: {plan.GuardReason}. "
+                           + "Nothing would be copied or deleted for that pair until the deletion is reviewed and approved.");
+
+            toCopy += plan.FilesToCopy;
+            toDelete += plan.FilesToDelete;
+            bytes += plan.BytesToCopy;
+            omitted += plan.ChangesOmitted;
+            rows.AddRange(plan.Changes.Select(c => ChangeRow.From(c, plan.Name, plan.Left, plan.Right, planned: true)));
         }
 
-        // The shared formatter, so this card, the pairs grid and the health check describe a run alike.
-        LastRunText.Text = $"{(last.Success ? "Succeeded" : "Completed with errors")} — "
-                         + $"{last.When:yyyy-MM-dd HH:mm:ss} ({Humanise.Ago(last.When)})";
-        LastRunText.Foreground = (System.Windows.Media.Brush)FindResource(last.Success ? "Ok" : "Bad");
-        LastRunGrid.ItemsSource = last.Destinations;
-        LastRunGrid.Visibility = last.Destinations.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+        string summary = $"{Humanise.Count(result.Plans.Count, "pair")} checked · "
+                       + $"{Humanise.Count(toCopy, "file")} to copy"
+                       + (bytes > 0 ? $" ({Humanise.Size(bytes)})" : "")
+                       + $" · {Humanise.Count(toDelete, "file")} to remove";
+
+        new ChangesWindow(
+            "Preview", "Preview — nothing has been changed", summary, rows,
+            warning: warnings.Count > 0 ? string.Join("\n", warnings) : null,
+            logText: logText,
+            emptyText: warnings.Count > 0
+                ? "No changes to list for the pairs that can run."
+                : "Everything is already in step. A sync would not copy or remove anything.",
+            footnote: omitted > 0 ? $"  and {omitted:N0} more that are not listed here" : null)
+        { Owner = DialogOwner }.ShowDialog();
     }
+
+    /// <summary>
+    /// The owner for a dialog that can be opened from the tray menu or a notification: this window, if it
+    /// has ever been on screen. WPF refuses to use a window that has never been shown as an owner, and
+    /// that is exactly the state the app is in when Windows starts it straight into the tray.
+    /// </summary>
+    private Window? DialogOwner => IsLoaded ? this : null;
 
     private bool _healthRunning;
 
@@ -471,7 +745,7 @@ public partial class MainWindow : Window
         if (_cts is not null || _healthRunning) return;   // a sync or another check is running
         SaveConfig();
 
-        // The report launches half a dozen schtasks processes and walks every folder pair, which is
+        // The report launches several schtasks processes and walks every folder pair, which is
         // long enough to freeze the window if it runs on the UI thread.
         _healthRunning = true;
         HealthButton.IsEnabled = false;
@@ -496,6 +770,14 @@ public partial class MainWindow : Window
     }
 
     // ===================== Schedule =====================
+
+    /// <summary>What Task Scheduler holds for each of the three tasks, as last read.</summary>
+    private Dictionary<string, ScheduleManager.TaskInfo> _tasks = new();
+
+    /// <summary>Completes when the schedules have been read for the first time.</summary>
+    private readonly TaskCompletionSource _schedulesRead = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private bool _scheduleTimesShown;
 
     private void BuildScheduleRows()
     {
@@ -523,7 +805,13 @@ public partial class MainWindow : Window
         ScheduleRows.Children.Add(MakeScheduleRow("Monthly", ScheduleManager.MonthlyTask, monthly));
 
         ScheduleRows.Children.Add(MakeScheduleRow("Logon / unlock", ScheduleManager.LogonTask, null));
-        // States are filled in once the window has loaded; see the Loaded handler.
+        // States are filled in once the message loop is running; see StartBackgroundWorkAsync.
+
+        if (AppInstance.IsSeparate)
+        {
+            ScheduleSeparateNote.Text = ScheduleManager.SeparateCopyMessage;
+            ScheduleSeparateNote.Visibility = Visibility.Visible;
+        }
     }
 
     /// <summary>"at [hh] : [mm]" — pickers rather than a text box, so only valid times exist.</summary>
@@ -619,28 +907,6 @@ public partial class MainWindow : Window
     private static int Picked(ComboBox combo, int fallback) =>
         combo.SelectedItem is string s && int.TryParse(s, out int v) ? v : fallback;
 
-    /// <summary>
-    /// Shows the time a registered task actually runs at, rather than a stale default. Queried off the
-    /// UI thread; never throws, since the caller discards the task.
-    /// </summary>
-    private async Task LoadScheduleTimesFromTasksAsync()
-    {
-        try
-        {
-            var (daily, monthly) = await Task.Run(() => (
-                ScheduleManager.GetCalendarSchedule(ScheduleManager.DailyTask),
-                ScheduleManager.GetCalendarSchedule(ScheduleManager.MonthlyTask)));
-
-            if (daily.time is { } dt) SelectTime(_dailyHour, _dailyMinute, dt);
-            if (monthly.time is { } mt) SelectTime(_monthlyHour, _monthlyMinute, mt);
-            if (monthly.day is { } day) Select(_monthlyDay, day);
-        }
-        catch (Exception ex)
-        {
-            AppendEvent("[Schedule] could not read the schedule times: " + ex.Message);
-        }
-    }
-
     private static void SelectTime(ComboBox hour, ComboBox minute, TimeOnly time)
     {
         Select(hour, time.Hour);
@@ -670,36 +936,38 @@ public partial class MainWindow : Window
         RefreshScheduleStates();
     }
 
-    /// <summary>
-    /// Greys out buttons that don't apply and shows each trigger's state. Each state is a schtasks
-    /// process, so they are queried off the UI thread: at startup these queries (with the schedule times
-    /// and the stale-target check) launched up to eleven processes one after another and held the window.
-    /// Never throws - callers discard the task.
-    /// </summary>
-    private void RefreshScheduleStates() => _ = RefreshScheduleStatesAsync();
+    private void RefreshScheduleStates() => _ = RefreshSchedulesAsync();
 
-    private async Task RefreshScheduleStatesAsync()
+    /// <summary>
+    /// Reads the three tasks and shows what was found: each trigger's state, the time it is registered
+    /// for, and - on the Home page - when the next scheduled sync is. Each task is one schtasks process,
+    /// so they are read off the UI thread. Never throws - callers discard the task.
+    /// </summary>
+    private async Task RefreshSchedulesAsync()
     {
         var rows = _rows.ToList();
-        List<ScheduleManager.TaskState> states;
+        Dictionary<string, ScheduleManager.TaskInfo> tasks;
         try
         {
-            states = await Task.Run(() => rows.Select(r => ScheduleManager.GetState(r.Task)).ToList());
+            tasks = await Task.Run(() => rows.ToDictionary(r => r.Task, r => ScheduleManager.Query(r.Task)));
         }
         catch (Exception ex)
         {
             AppendEvent("[Schedule] could not read the schedules: " + ex.Message);
             foreach (var row in rows) row.State.Text = "could not be read";
+            _schedulesRead.TrySetResult();
             return;
         }
 
-        for (int i = 0; i < rows.Count; i++)
+        _tasks = tasks;
+        foreach (var row in rows)
         {
-            var row = rows[i];
-            var st = states[i];
-            row.Enable.IsEnabled = st != ScheduleManager.TaskState.Enabled;
-            row.Disable.IsEnabled = st == ScheduleManager.TaskState.Enabled;
-            row.Remove.IsEnabled = st != ScheduleManager.TaskState.NotInstalled;
+            var st = tasks[row.Task].State;
+            // A copy running on its own data folder may look, but must not change the real tasks.
+            bool canChange = !AppInstance.IsSeparate;
+            row.Enable.IsEnabled = canChange && st != ScheduleManager.TaskState.Enabled;
+            row.Disable.IsEnabled = canChange && st == ScheduleManager.TaskState.Enabled;
+            row.Remove.IsEnabled = canChange && st != ScheduleManager.TaskState.NotInstalled;
             row.State.Text = st switch
             {
                 ScheduleManager.TaskState.Enabled => "enabled",
@@ -707,6 +975,21 @@ public partial class MainWindow : Window
                 _ => "not installed",
             };
         }
+
+        // Show the time a registered task actually runs at, rather than a stale default - once, so a
+        // time the user is in the middle of choosing is not overwritten by a later refresh.
+        if (!_scheduleTimesShown)
+        {
+            _scheduleTimesShown = true;
+            var daily = tasks[ScheduleManager.DailyTask];
+            var monthly = tasks[ScheduleManager.MonthlyTask];
+            if (daily.Time is { } dt) SelectTime(_dailyHour, _dailyMinute, dt);
+            if (monthly.Time is { } mt) SelectTime(_monthlyHour, _monthlyMinute, mt);
+            if (monthly.Day is { } day) Select(_monthlyDay, day);
+        }
+
+        _schedulesRead.TrySetResult();
+        RefreshHome();
     }
 
     private bool ConfirmExePathForScheduling()
@@ -721,31 +1004,16 @@ public partial class MainWindow : Window
             primary: "Create anyway", tone: DialogTone.Warning);
     }
 
-    private async Task WarnAboutStaleTaskTargetsAsync()
+    private Task WarnAboutStaleTaskTargetsAsync()
     {
-        var tasks = _scheduleTasks;
-        List<(string task, string label, string exe)> stale;
-        try
-        {
-            // Six schtasks processes at most: off the UI thread, so the window is usable meanwhile.
-            stale = await Task.Run(() =>
-            {
-                var found = new List<(string task, string label, string exe)>();
-                foreach (var (task, label) in tasks)
-                {
-                    if (!ScheduleManager.Exists(task)) continue;
-                    var exe = ScheduleManager.GetTaskExe(task);
-                    if (!string.IsNullOrEmpty(exe) && !File.Exists(exe)) found.Add((task, label, exe));
-                }
-                return found;
-            });
-        }
-        catch (Exception ex)
-        {
-            AppendEvent("[Schedule] could not check the schedules' targets: " + ex.Message);
-            return;
-        }
-        if (stale.Count == 0) return;
+        if (AppInstance.IsSeparate) return Task.CompletedTask;      // not this copy's tasks to repair
+
+        var stale = _scheduleTasks
+            .Select(t => (t.task, t.label, info: _tasks.TryGetValue(t.task, out var info) ? info : ScheduleManager.TaskInfo.Missing))
+            .Where(t => t.info.Installed && !string.IsNullOrEmpty(t.info.Exe) && !File.Exists(t.info.Exe))
+            .Select(t => (t.task, t.label, exe: t.info.Exe!))
+            .ToList();
+        if (stale.Count == 0) return Task.CompletedTask;
 
         AppendEvent("[Schedule] stale target(s): " + string.Join(" | ", stale.Select(s => $"{s.label} -> {s.exe}")));
 
@@ -755,7 +1023,7 @@ public partial class MainWindow : Window
                 + "\n\nRepair them to use this copy?\n\n" + ScheduleManager.ExePath
                 + "\n\nTimes and days are kept as they are.",
                 primary: "Repair", tone: DialogTone.Warning))
-            return;
+            return Task.CompletedTask;
 
         foreach (var s in stale)
         {
@@ -764,6 +1032,7 @@ public partial class MainWindow : Window
         }
         RefreshScheduleStates();
         MessageWindow.Info(this, "Schedules repaired", "They now point at this copy of Folder Sync.");
+        return Task.CompletedTask;
     }
 
     // ===================== Email =====================
@@ -793,7 +1062,20 @@ public partial class MainWindow : Window
             ? "•••••••••••••••  saved — type to replace"
             : "paste the 16-character App Password";
     }
-    private void EmailMode_Changed(object sender, SelectionChangedEventArgs e) => SaveEmail();
+
+    private void EmailMode_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        SaveEmail();
+        if (_loaded) UpdateEmailModeHint();
+    }
+
+    private void UpdateEmailModeHint()
+    {
+        EmailModeHint.Text = EmailModeBox.SelectedIndex == 3
+            ? "One email a week with how many syncs ran, any that failed, and which pairs have not synced. "
+              + "It is sent by the first scheduled sync after the week is up; the first one arrives a week from now."
+            : "Sent after each scheduled sync, with that run's log attached. Syncs you start by hand do not send email.";
+    }
 
     private void SaveEmail()
     {
@@ -806,7 +1088,13 @@ public partial class MainWindow : Window
         em.To = EmailTo.Text.Trim();
         em.SmtpHost = EmailHost.Text.Trim();
         em.SmtpPort = int.TryParse(EmailPort.Text, out int port) ? port : 587;
-        em.Mode = EmailModeBox.SelectedIndex switch { 1 => FolderSync.EmailMode.OnError, 2 => FolderSync.EmailMode.OnSuccess, _ => FolderSync.EmailMode.Always };
+        em.Mode = EmailModeBox.SelectedIndex switch
+        {
+            1 => FolderSync.EmailMode.OnError,
+            2 => FolderSync.EmailMode.OnSuccess,
+            3 => FolderSync.EmailMode.Weekly,
+            _ => FolderSync.EmailMode.Always,
+        };
 
         if (EmailPassword.Password.Length > 0)
         {
@@ -922,7 +1210,7 @@ public partial class MainWindow : Window
             BatchGrid.ItemsSource = _batches;
             RestoreStatus.Text = _batches.Count == 0
                 ? "Nothing has been recycled. Files appear here when a sync would otherwise delete or replace them."
-                : $"{_batches.Count} batch(es) found.";
+                : $"{Humanise.Count(_batches.Count, "batch", "batches")} found.";
             UpdateRestoreButtons();
         }
         catch (Exception ex)
@@ -1005,7 +1293,7 @@ public partial class MainWindow : Window
             : "\n\nThe next sync will copy them back across the pair.";
 
         var choice = MessageWindow.Choose(this, "Restore files",
-            $"Restore {files.Count} file(s) into:\n\n{restoreTo}{caution}",
+            $"Restore {Humanise.Count(files.Count, "file")} into:\n\n{restoreTo}{caution}",
             primary: "Skip existing", secondary: "Overwrite existing");
         if (choice == DialogChoice.Cancel) return;
 
@@ -1013,7 +1301,7 @@ public partial class MainWindow : Window
         var result = RecycleStore.Restore(batch.Path, files, restoreTo, overwrite);
 
         RestoreStatus.Text = $"Restored {result.Restored}, skipped {result.Skipped}"
-                           + (result.Errors.Count > 0 ? $", {result.Errors.Count} error(s)." : ".");
+                           + (result.Errors.Count > 0 ? $", {Humanise.Count(result.Errors.Count, "error")}." : ".");
         AppendEvent($"[Recycle] restored {result.Restored}, skipped {result.Skipped}, errors {result.Errors.Count}");
 
         if (result.Errors.Count > 0)
@@ -1031,7 +1319,7 @@ public partial class MainWindow : Window
         if (BatchGrid.SelectedItem is not RecycleBatch batch) return;
 
         if (!MessageWindow.Confirm(this, "Delete batch",
-                $"Permanently delete this batch?\n\n{batch.Path}\n\n{batch.FileCount} file(s), {batch.SizeText}.\n\n"
+                $"Permanently delete this batch?\n\n{batch.Path}\n\n{Humanise.Count(batch.FileCount, "file")}, {batch.SizeText}.\n\n"
                 + "This cannot be undone.",
                 primary: "Delete", tone: DialogTone.Danger))
             return;
@@ -1044,6 +1332,7 @@ public partial class MainWindow : Window
     // ===================== Cloud storage mounted as a folder =====================
 
     private List<CloudFolder> _mountedCloud = new();
+    private bool _cloudExpanded;
 
     /// <summary>
     /// Shows the cloud services whose desktop app already exposes them as a folder, so syncing to
@@ -1051,12 +1340,13 @@ public partial class MainWindow : Window
     /// route the app has: see <see cref="CloudFolders"/> for why talking to a provider's API was
     /// tried and dropped.
     /// </summary>
-    private void RefreshMountedCloud()
+    /// <param name="firstTime">Decide whether the card starts open: it does until there is a pair.</param>
+    private void RefreshMountedCloud(bool firstTime = false)
     {
         try { _mountedCloud = CloudFolders.Detect(); }
         catch (Exception ex) { _mountedCloud = new List<CloudFolder>(); AppendEvent("[Cloud] detect failed: " + ex.Message); }
 
-        MountedCloudList.ItemsSource = _mountedCloud
+        var rows = _mountedCloud
             .Select(f => new CloudFolderRow
             {
                 Provider = f.Provider,
@@ -1064,10 +1354,34 @@ public partial class MainWindow : Window
                 InUse = _pairs.Any(p => Covers(p, f.Path)),
             })
             .ToList();
+        MountedCloudList.ItemsSource = rows;
 
         // Stays visible even with nothing found: the note below the list explains that installing a
         // cloud app is all it takes for one to show up.
         MountedCloudCard.Visibility = Visibility.Visible;
+
+        int unused = rows.Count(r => !r.InUse);
+        CloudSummary.Text = rows.Count == 0
+            ? "None found. Install a cloud service's desktop app and its folder appears here."
+            : $"{Humanise.Count(rows.Count, "cloud folder")} found · "
+              + (unused == 0 ? "all set up" : $"{unused} not set up yet");
+
+        // Open on a fresh install, where this card is the quickest way to a first pair; folded once
+        // pairs exist, where it would otherwise push them down the page every time.
+        if (firstTime) _cloudExpanded = _pairs.Count == 0;
+        ShowCloudDetails();
+    }
+
+    private void CloudToggle_Click(object sender, RoutedEventArgs e)
+    {
+        _cloudExpanded = !_cloudExpanded;
+        ShowCloudDetails();
+    }
+
+    private void ShowCloudDetails()
+    {
+        CloudDetails.Visibility = _cloudExpanded ? Visibility.Visible : Visibility.Collapsed;
+        CloudToggle.Content = _cloudExpanded ? "Hide" : "Show";
     }
 
     /// <summary>True when either side of a pair is at or inside <paramref name="folder"/>.</summary>
@@ -1088,26 +1402,13 @@ public partial class MainWindow : Window
     {
         if ((sender as FrameworkElement)?.Tag is not string folder) return;
 
-        var pair = new SyncPair
+        AddPair(new SyncPair
         {
             Right = folder,
             Direction = SyncDirection.ToRight,
             Mirror = false,      // additive until the user chooses otherwise
             Enabled = true,
-        };
-
-        var dlg = new PairWindow(pair, isNew: true) { Owner = this };
-        if (dlg.ShowDialog() != true) return;
-
-        if (_pairs.Any(p => SamePair(p, pair)))
-        {
-            MessageWindow.Info(this, "Already added", "A pair with those two folders already exists.");
-            return;
-        }
-
-        _pairs.Add(pair);
-        PairGrid.SelectedItem = pair;
-        RefreshMountedCloud();
+        });
     }
 
     // ===================== Updates =====================
@@ -1148,12 +1449,8 @@ public partial class MainWindow : Window
     private void ShowUpdateWindow()
     {
         if (_pendingUpdate is null) return;
-        var dlg = new UpdateWindow(_pendingUpdate) { Owner = this };
-        if (dlg.ShowDialog() == true)
-        {
-            _tray.Visible = false;
-            Application.Current.Shutdown();
-        }
+        var dlg = new UpdateWindow(_pendingUpdate) { Owner = DialogOwner };
+        if (dlg.ShowDialog() == true) ExitApp();
     }
 
     // ===================== Tray =====================
@@ -1165,7 +1462,7 @@ public partial class MainWindow : Window
         menu.Items.Add("Sync now", null, async (_, _) => await RunSyncAsync(listOnly: false));
         menu.Items.Add("Check for updates", null, async (_, _) => await CheckForUpdatesAsync(manual: true));
         menu.Items.Add(new WinForms.ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => { _tray!.Visible = false; Application.Current.Shutdown(); });
+        menu.Items.Add("Exit", null, (_, _) => ExitApp());
 
         var tray = new WinForms.NotifyIcon
         {
@@ -1175,6 +1472,8 @@ public partial class MainWindow : Window
             ContextMenuStrip = menu,
         };
         tray.DoubleClick += (_, _) => ShowFromTray();
+        // A notification is an invitation to look: clicking it opens the window on the Home page.
+        tray.BalloonTipClicked += (_, _) => { ShowFromTray(); GoTo(NavHome); };
         return tray;
     }
 
@@ -1183,7 +1482,60 @@ public partial class MainWindow : Window
         Show();
         WindowState = WindowState.Normal;
         Activate();
+        // Texts such as "10 minutes ago" may be stale after a long time in the tray.
+        RefreshPairStatuses();
+        _ = RefreshHomeAsync();
     }
+
+    /// <summary>Really exits, as opposed to closing the window into the tray.</summary>
+    private void ExitApp()
+    {
+        _exiting = true;
+        _tray.Visible = false;
+        Application.Current.Shutdown();
+    }
+
+    /// <summary>
+    /// A second copy of the app was started. It cannot open a second window, so it asks this one to
+    /// show itself - which matters once the app can be running with no window at all.
+    /// </summary>
+    private void ListenForShowRequests()
+    {
+        try
+        {
+            _showSignal = new EventWaitHandle(false, EventResetMode.AutoReset, AppInstance.ShowEventName);
+        }
+        catch (Exception ex)
+        {
+            AppendEvent("[Startup] could not listen for a second copy: " + ex.Message);
+            return;
+        }
+
+        var signal = _showSignal;
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                while (signal.WaitOne())
+                {
+                    if (_exiting) return;
+                    Dispatcher.BeginInvoke(new Action(ShowFromTray));
+                }
+            }
+            catch { /* the handle was closed: the app is exiting */ }
+        })
+        { IsBackground = true, Name = "Show requests" };
+        thread.Start();
+    }
+
+    private EventWaitHandle? _showSignal;
+    private bool _trayHintShown;
+
+    /// <summary>
+    /// Whether closing the window should leave the app running in the tray: when it is watching folders,
+    /// or when it has been set to start in the tray at sign-in - both say "keep this running".
+    /// </summary>
+    private bool StaysInTray => _config.SyncOnChange || StartupRegistration.IsEnabled();
 
     protected override void OnStateChanged(EventArgs e)
     {
@@ -1192,8 +1544,34 @@ public partial class MainWindow : Window
         base.OnStateChanged(e);
     }
 
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        // Watching for changes only works while the app is running, so with that on, closing the window
+        // puts it in the tray instead of ending the watch without a word - and likewise when the app has
+        // been asked to live in the tray from sign-in. Exit on the tray icon still exits. (When Windows
+        // or Setup shuts the app down, WPF closes the window regardless of this.)
+        if (!_exiting && StaysInTray)
+        {
+            e.Cancel = true;
+            Hide();
+            if (!_trayHintShown)
+            {
+                _trayHintShown = true;
+                _tray.ShowBalloonTip(6000, "Folder Sync is still running",
+                    "It stays in the tray, next to the clock. Right-click the icon and choose Exit to stop it.",
+                    WinForms.ToolTipIcon.Info);
+            }
+        }
+        base.OnClosing(e);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
+        _exiting = true;
+        _clock?.Stop();
+        _watcher.Dispose();
+        _historyWatcher?.Dispose();
+        try { _showSignal?.Set(); _showSignal?.Dispose(); } catch { }
         _tray.Visible = false;
         _tray.Dispose();
         base.OnClosed(e);

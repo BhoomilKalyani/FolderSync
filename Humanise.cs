@@ -23,9 +23,12 @@ public static class Humanise
     }
 
     /// <summary>How long ago something happened: "just now", "45 minutes ago", "3 days ago".</summary>
-    public static string Ago(DateTime when)
+    public static string Ago(DateTime when) => Ago(when, DateTime.Now);
+
+    /// <summary>The same, measured from a given moment rather than the clock - so it can be tested.</summary>
+    public static string Ago(DateTime when, DateTime now)
     {
-        var age = DateTime.Now - when;
+        var age = now - when;
         // Under a minute, Age() already says "just now", which takes no suffix ("just now ago").
         // A clock change (or a config copied from another machine) can put a timestamp in the future.
         return age < TimeSpan.FromMinutes(1) ? "just now" : Age(age) + " ago";
@@ -44,4 +47,20 @@ public static class Humanise
     }
 
     private static string Plural(int count, string noun) => count == 1 ? $"1 {noun}" : $"{count} {noun}s";
+
+    /// <summary>
+    /// A count with its noun: "1 pair", "3 pairs", "1,204 files". Replaces the "3 pair(s)" the window
+    /// used to show. <paramref name="plural"/> is only needed when adding an "s" is not enough.
+    /// </summary>
+    public static string Count(int count, string singular, string? plural = null) =>
+        count == 1 ? $"1 {singular}" : $"{count:N0} {plural ?? singular + "s"}";
+
+    /// <summary>How long something took: "under 1 s", "42 s", "3 min 05 s", "1 h 12 min". Short enough for a table column.</summary>
+    public static string Duration(TimeSpan span)
+    {
+        if (span < TimeSpan.FromSeconds(1)) return "under 1 s";
+        if (span < TimeSpan.FromMinutes(1)) return $"{(int)span.TotalSeconds} s";
+        if (span < TimeSpan.FromHours(1)) return $"{(int)span.TotalMinutes} min {span.Seconds:00} s";
+        return $"{(int)span.TotalHours} h {span.Minutes:00} min";
+    }
 }
